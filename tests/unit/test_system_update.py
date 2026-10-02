@@ -7,7 +7,9 @@ from dotdoctor.application.system_update import (
     RebootStatus,
     SystemDryRunService,
     SystemUpgradeService,
+    detect_aur_helper,
     detect_disk_space_status,
+    detect_pacnew_files,
     detect_reboot_status,
     is_online,
 )
@@ -49,9 +51,9 @@ def test_system_dry_run_marks_outd_when_updates_detected(monkeypatch, tmp_path: 
             return SimpleNamespace(stdout="", returncode=0)
         if command[:2] == ["fwupdmgr", "get-updates"]:
             return SimpleNamespace(stdout="1.2.3 -> 1.2.4\n", returncode=0)
-        if command[:2] == ["yay", "-Qua"]:
+        if command[:2] in (["yay", "-Qua"], ["paru", "-Qua"]):
             return SimpleNamespace(stdout="aur/pkg-a 1.0-1 2.0-1\n", returncode=0)
-        raise AssertionError(f"Unexpected command: {command}")
+        return SimpleNamespace(stdout="", returncode=0)
 
     monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", fake_which)
     monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run)
@@ -651,3 +653,186 @@ def test_system_upgrade_offline_aborts_immediately(tmp_path: Path) -> None:
     code = service.run(_context(tmp_path), console)
     assert code == 1
     assert any("No active internet connection detected" in msg for msg in console.messages)
+
+
+def test_detect_aur_helper_prefers_paru_then_yay() -> None:
+    assert detect_aur_helper(lambda x: "/usr/bin/paru" if x == "paru" else "/usr/bin/yay") == "paru"
+    assert detect_aur_helper(lambda x: "/usr/bin/yay" if x == "yay" else None) == "yay"
+    assert detect_aur_helper(lambda x: None) is None
+
+
+def test_check_orphans_detects_unneeded_packages(monkeypatch, tmp_path: Path) -> None:
+    service = SystemDryRunService()
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.shutil.which", lambda x: "/usr/bin/pacman"
+    )
+
+    # With orphans
+    def fake_run_with_orphans(*args, **kwargs):
+        return SimpleNamespace(stdout="pkg-orphan-1\npkg-orphan-2\n", returncode=0)
+
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run_with_orphans)
+    res = service._check_orphans(_context(tmp_path))
+    assert res.severity is Severity.WARN
+    assert "2 orphan packages found" in res.message
+    assert res.remediation is not None
+    assert "pacman -Rns" in res.remediation
+
+    # Without orphans (pacman returns 1 when no orphans)
+    def fake_run_no_orphans(*args, **kwargs):
+        return SimpleNamespace(stdout="", returncode=1)
+
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run_no_orphans)
+    res_clean = service._check_orphans(_context(tmp_path))
+    assert res_clean.severity is Severity.PASS
+    assert "no orphan packages" in res_clean.message
+
+
+def test_check_pacnew_detects_pending_merges(monkeypatch, tmp_path: Path) -> None:
+    service = SystemDryRunService()
+    assert isinstance(detect_pacnew_files(), list)
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.shutil.which", lambda x: "/usr/bin/pacdiff"
+    )
+
+    # With pacnew files
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.detect_pacnew_files",
+        lambda: ["/etc/pacman.conf.pacnew", "/etc/sudoers.pacnew"],
+    )
+    res = service._check_pacnew(_context(tmp_path))
+    assert res.severity is Severity.WARN
+    assert "2 .pacnew files found" in res.message
+    assert "pacdiff" in (res.remediation or "")
+
+    # Clean
+    monkeypatch.setattr("dotdoctor.application.system_update.detect_pacnew_files", lambda: [])
+    res_clean = service._check_pacnew(_context(tmp_path))
+    assert res_clean.severity is Severity.PASS
+    assert "no .pacnew files" in res_clean.message
+
+
+def test_check_failed_services_detects_failures(monkeypatch, tmp_path: Path) -> None:
+    service = SystemDryRunService()
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.shutil.which", lambda x: "/usr/bin/systemctl"
+    )
+
+    # With failed service
+    def fake_run_failed(*args, **kwargs):
+        cmd = args[0]
+        if "--user" in cmd:
+            return SimpleNamespace(stdout="", returncode=0)
+        return SimpleNamespace(
+            stdout="failing.service loaded failed failed My Service\n", returncode=0
+        )
+
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run_failed)
+    res = service._check_failed_services(_context(tmp_path))
+    assert res.severity is Severity.FAIL
+    assert "1 failed unit (failing.service)" in res.message
+    assert "systemctl status failing.service" in (res.remediation or "")
+
+    # Clean
+    def fake_run_clean(*args, **kwargs):
+        return SimpleNamespace(stdout="", returncode=0)
+
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run_clean)
+    res_clean = service._check_failed_services(_context(tmp_path))
+    assert res_clean.severity is Severity.PASS
+    assert "no failed units" in res_clean.message
+
+
+def test_check_flatpak_unused_detects_unused(monkeypatch, tmp_path: Path) -> None:
+    service = SystemDryRunService()
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.shutil.which", lambda x: "/usr/bin/flatpak"
+    )
+
+    def fake_run_unused(*args, **kwargs):
+        out = (
+            "\n        ID                                           Branch\n"
+            " 1.     org.freedesktop.Platform.GL.default          25.08\n"
+            " 2.     org.freedesktop.Platform.GL.default          25.08-extra\n"
+            "\nProceed with these changes? [Y/n]:"
+        )
+        return SimpleNamespace(stdout=out, returncode=1)
+
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run_unused)
+    res = service._check_flatpak_unused(_context(tmp_path))
+    assert res.severity is Severity.WARN
+    assert "2 unused runtimes found" in res.message
+    assert "flatpak uninstall --unused" in (res.remediation or "")
+
+    def fake_run_clean(*args, **kwargs):
+        return SimpleNamespace(stdout="Nothing unused to uninstall\n", returncode=0)
+
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run_clean)
+    res_clean = service._check_flatpak_unused(_context(tmp_path))
+    assert res_clean.severity is Severity.PASS
+    assert "no unused runtimes" in res_clean.message
+
+
+def test_check_journal_disk_usage(monkeypatch, tmp_path: Path) -> None:
+    service = SystemDryRunService()
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.shutil.which", lambda x: "/usr/bin/journalctl"
+    )
+
+    # Normal usage
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout="Archived and active journals take up 500M in the file system.\n",
+            returncode=0,
+        ),
+    )
+    res = service._check_journal(_context(tmp_path))
+    assert res.severity is Severity.PASS
+    assert "500M in journal logs" in res.message
+
+    # High usage > 4G
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout="Archived and active journals take up 6.2G in the file system.\n",
+            returncode=0,
+        ),
+    )
+    res_high = service._check_journal(_context(tmp_path))
+    assert res_high.severity is Severity.WARN
+    assert "6.2G in journal logs" in res_high.message
+    assert "journalctl --vacuum-size" in (res_high.remediation or "")
+
+
+def test_system_upgrade_with_paru_and_maintenance_cleanup(monkeypatch, tmp_path: Path) -> None:
+    service = SystemUpgradeService(aur_helper_fn=lambda: "paru")
+    console = DummyConsole()
+    commands: list[list[str]] = []
+
+    def fake_which(name: str) -> str | None:
+        if name in {"paru", "flatpak", "paccache", "cachyos-rate-mirrors"}:
+            return f"/usr/bin/{name}"
+        return None
+
+    def fake_run(*args, **kwargs):
+        command = args[0]
+        commands.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", fake_which)
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.detect_pacnew_files",
+        lambda: ["/etc/pacman.conf.pacnew"],
+    )
+
+    code = service.run(_context(tmp_path), console)
+
+    assert code == 0
+    assert ["paru", "-Syu", "--noconfirm"] in commands
+    assert ["flatpak", "update", "-y"] in commands
+    assert ["flatpak", "uninstall", "--unused", "-y"] in commands
+    assert ["sudo", "paccache", "-rk2"] in commands
+    assert ["sudo", "paccache", "-ruk0"] in commands
+    assert any(".pacnew configuration files found" in msg for msg in console.messages)

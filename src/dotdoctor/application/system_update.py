@@ -189,6 +189,56 @@ def detect_disk_space_status(
     )
 
 
+def detect_aur_helper(which_fn: Callable[[str], str | None] | None = None) -> str | None:
+    fn = which_fn or shutil.which
+    for helper in ("paru", "yay"):
+        if fn(helper) is not None:
+            return helper
+    return None
+
+
+def _run_capture(
+    command: list[str],
+    timeout: int,
+    input_str: str | None = None,
+) -> _ExecResult:
+    try:
+        return _ExecResult(
+            completed=subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                input=input_str,
+            )
+        )
+    except subprocess.TimeoutExpired:
+        return _ExecResult(completed=None, timed_out=True)
+    except (OSError, subprocess.SubprocessError):
+        return _ExecResult(completed=None, timed_out=False)
+
+
+def detect_pacnew_files() -> list[str]:
+    pacdiff_bin = shutil.which("pacdiff")
+    if pacdiff_bin is not None:
+        res = _run_capture([pacdiff_bin, "-o"], timeout=15)
+        if res.completed and res.completed.returncode == 0:
+            return [line.strip() for line in res.completed.stdout.splitlines() if line.strip()]
+
+    files: list[str] = []
+    etc_dir = Path("/etc")
+    if etc_dir.exists():
+        try:
+            for p in etc_dir.rglob("*.pacnew"):
+                files.append(str(p))
+            for p in etc_dir.rglob("*.pacsave"):
+                files.append(str(p))
+        except OSError:
+            pass
+    return sorted(files)
+
+
 @dataclass(frozen=True)
 class SystemCheckTask:
     check_id: str
@@ -197,14 +247,22 @@ class SystemCheckTask:
 
 
 class SystemDryRunService:
-    """Runs parallel dry-run checks for package update availability."""
+    """Runs parallel dry-run checks for package update availability and system hygiene."""
 
-    def __init__(self, is_online_fn: Callable[[], bool] = is_online) -> None:
+    def __init__(
+        self,
+        is_online_fn: Callable[[], bool] = is_online,
+        aur_helper_fn: Callable[[], str | None] = detect_aur_helper,
+    ) -> None:
         self._is_online_fn = is_online_fn
+        self._aur_helper_fn = aur_helper_fn
 
     def build_tasks(self, context: ScanContext) -> list[SystemCheckTask]:
-        if not self._is_online_fn():
-            return [
+        tasks: list[SystemCheckTask] = []
+        online = self._is_online_fn()
+
+        if not online:
+            tasks.append(
                 SystemCheckTask(
                     check_id="sys.network",
                     label="Checking network connection...",
@@ -214,63 +272,118 @@ class SystemDryRunService:
                         message="no active internet connection",
                         remediation="connect to the internet and retry",
                     ),
-                ),
+                )
+            )
+        else:
+            tasks.append(
                 SystemCheckTask(
-                    check_id="sys.reboot",
-                    label="Checking reboot status...",
-                    runner=lambda: self._check_reboot(context),
-                ),
-                SystemCheckTask(
-                    check_id="sys.disk",
-                    label="Checking disk space...",
-                    runner=lambda: self._check_disk_space(context),
-                ),
-            ]
+                    check_id="sys.packages",
+                    label="Checking packages...",
+                    runner=lambda: self._check_arch_packages(context),
+                )
+            )
 
-        tasks: list[SystemCheckTask] = [
-            SystemCheckTask(
-                check_id="sys.packages",
-                label="Checking Arch packages...",
-                runner=lambda: self._check_arch_packages(context),
-            ),
-            SystemCheckTask(
-                check_id="sys.flatpak",
-                label="Scanning Flatpak packages...",
-                runner=lambda: self._check_flatpak(context),
-            ),
-            SystemCheckTask(
-                check_id="sys.firmware",
-                label="Querying firmware updates...",
-                runner=lambda: self._check_firmware(context),
-            ),
+            aur_helper = self._aur_helper_fn()
+            if aur_helper is not None:
+                tasks.append(
+                    SystemCheckTask(
+                        check_id="sys.aur",
+                        label=f"Checking AUR ({aur_helper})...",
+                        runner=lambda: self._check_aur_packages(context, aur_helper),
+                    )
+                )
+
+            if shutil.which("flatpak") is not None:
+                tasks.append(
+                    SystemCheckTask(
+                        check_id="sys.flatpak",
+                        label="Scanning Flatpak packages...",
+                        runner=lambda: self._check_flatpak(context),
+                    )
+                )
+                tasks.append(
+                    SystemCheckTask(
+                        check_id="sys.flatpak-unused",
+                        label="Checking unused Flatpaks...",
+                        runner=lambda: self._check_flatpak_unused(context),
+                    )
+                )
+
+            tasks.append(
+                SystemCheckTask(
+                    check_id="sys.firmware",
+                    label="Querying firmware updates...",
+                    runner=lambda: self._check_firmware(context),
+                )
+            )
+
+            omz_path = _resolve_oh_my_zsh_path(context)
+            if omz_path is not None:
+                tasks.append(
+                    SystemCheckTask(
+                        check_id="sys.shell-omz",
+                        label="Checking Oh-My-Zsh updates...",
+                        runner=lambda: self._check_oh_my_zsh(omz_path),
+                    )
+                )
+
+        tasks.append(
             SystemCheckTask(
                 check_id="sys.reboot",
                 label="Checking reboot status...",
                 runner=lambda: self._check_reboot(context),
-            ),
+            )
+        )
+        tasks.append(
             SystemCheckTask(
                 check_id="sys.disk",
                 label="Checking disk space...",
                 runner=lambda: self._check_disk_space(context),
-            ),
-        ]
+            )
+        )
 
-        if shutil.which("yay") is not None:
+        if shutil.which("pacman") is not None:
             tasks.append(
                 SystemCheckTask(
-                    check_id="sys.aur",
-                    label="Checking AUR packages...",
-                    runner=lambda: self._check_aur_packages(context),
+                    check_id="sys.orphans",
+                    label="Checking orphan packages...",
+                    runner=lambda: self._check_orphans(context),
                 )
             )
 
-        omz_path = _resolve_oh_my_zsh_path(context)
-        if omz_path is not None:
+        if shutil.which("pacman") is not None or shutil.which("paccache") is not None:
             tasks.append(
                 SystemCheckTask(
-                    check_id="sys.shell-omz",
-                    label="Checking Oh-My-Zsh updates...",
-                    runner=lambda: self._check_oh_my_zsh(omz_path),
+                    check_id="sys.cache",
+                    label="Checking pacman cache...",
+                    runner=lambda: self._check_pacman_cache(context),
+                )
+            )
+
+        if shutil.which("pacdiff") is not None or shutil.which("pacman") is not None:
+            tasks.append(
+                SystemCheckTask(
+                    check_id="sys.pacnew",
+                    label="Checking .pacnew files...",
+                    runner=lambda: self._check_pacnew(context),
+                )
+            )
+
+        if shutil.which("systemctl") is not None:
+            tasks.append(
+                SystemCheckTask(
+                    check_id="sys.services",
+                    label="Checking failed services...",
+                    runner=lambda: self._check_failed_services(context),
+                )
+            )
+
+        if shutil.which("journalctl") is not None:
+            tasks.append(
+                SystemCheckTask(
+                    check_id="sys.journal",
+                    label="Checking journal disk usage...",
+                    runner=lambda: self._check_journal(context),
                 )
             )
 
@@ -523,21 +636,21 @@ class SystemDryRunService:
             },
         )
 
-    def _check_aur_packages(self, context: ScanContext) -> CheckResult:
-        result = _run_capture(["yay", "-Qua"], timeout=60)
+    def _check_aur_packages(self, context: ScanContext, aur_helper: str = "yay") -> CheckResult:
+        result = _run_capture([aur_helper, "-Qua"], timeout=60)
         if result.timed_out:
             return CheckResult(
                 check_id="sys.aur",
                 severity=Severity.FAIL,
-                message="AUR update check timed out",
+                message=f"{aur_helper} update check timed out",
                 remediation="refresh mirror list and retry",
             )
         if result.completed is None:
             return CheckResult(
                 check_id="sys.aur",
                 severity=Severity.WARN,
-                message="could not run AUR update check",
-                remediation="run yay -Qua manually",
+                message=f"could not run {aur_helper} -Qua",
+                remediation=f"run {aur_helper} -Qua manually",
             )
         lines = [line.strip() for line in result.completed.stdout.splitlines() if line.strip()]
         flagged = [line for line in lines if _AUR_FLAGGED_RE.search(line)]
@@ -568,6 +681,273 @@ class SystemDryRunService:
             message=f"{len(regular)} AUR update{'s' if len(regular) != 1 else ''} available",
             remediation="run dotdoctor --sysup to apply updates",
             details={"updates": len(regular), "flagged": 0},
+        )
+
+    def _check_pacman_cache(
+        self,
+        context: ScanContext,
+        cache_dir: Path = Path("/var/cache/pacman/pkg"),
+    ) -> CheckResult:
+        if not cache_dir.exists():
+            return CheckResult(
+                check_id="sys.cache",
+                severity=Severity.PASS,
+                message="pacman cache clean",
+                remediation=None,
+            )
+
+        total_bytes = 0
+        try:
+            with os.scandir(cache_dir) as it:
+                for entry in it:
+                    if entry.is_file(follow_symlinks=False):
+                        total_bytes += entry.stat().st_size
+        except OSError:
+            pass
+
+        total_str = _format_bytes(total_bytes)
+        candidates = 0
+        saved_str = ""
+
+        if shutil.which("paccache") is not None:
+            res = _run_capture(["paccache", "-d"], timeout=20)
+            if res.completed and res.completed.returncode == 0:
+                match = re.search(
+                    r"finished dry run:\s*(\d+)\s*candidates\s*\(disk space saved:\s*([^)]+)\)",
+                    res.completed.stdout,
+                )
+                if match:
+                    candidates = int(match.group(1))
+                    saved_str = match.group(2).strip()
+
+        if candidates > 0 and (total_bytes > 2 * 1024**3 or candidates >= 10):
+            return CheckResult(
+                check_id="sys.cache",
+                severity=Severity.WARN,
+                message=f"{total_str} in pacman cache ({saved_str} reclaimable)",
+                remediation="run sudo paccache -rk2",
+                details={"total_bytes": total_bytes, "candidates": candidates, "saved": saved_str},
+            )
+
+        if total_bytes > 5 * 1024**3:
+            return CheckResult(
+                check_id="sys.cache",
+                severity=Severity.WARN,
+                message=f"{total_str} in pacman cache",
+                remediation="run sudo paccache -rk2",
+                details={"total_bytes": total_bytes},
+            )
+
+        return CheckResult(
+            check_id="sys.cache",
+            severity=Severity.PASS,
+            message=f"{total_str} in pacman cache (clean)",
+            remediation=None,
+            details={"total_bytes": total_bytes, "candidates": candidates},
+        )
+
+    def _check_orphans(self, context: ScanContext) -> CheckResult:
+        if shutil.which("pacman") is None:
+            return CheckResult(
+                check_id="sys.orphans",
+                severity=Severity.PASS,
+                message="pacman not installed",
+                remediation=None,
+            )
+
+        result = _run_capture(["pacman", "-Qtdq"], timeout=15)
+        if result.timed_out:
+            return CheckResult(
+                check_id="sys.orphans",
+                severity=Severity.WARN,
+                message="orphan check timed out",
+                remediation="run pacman -Qtdq manually",
+            )
+        if result.completed is None or result.completed.returncode not in {0, 1}:
+            return CheckResult(
+                check_id="sys.orphans",
+                severity=Severity.WARN,
+                message="could not check orphan packages",
+                remediation="run pacman -Qtdq manually",
+            )
+
+        orphans = [line.strip() for line in result.completed.stdout.splitlines() if line.strip()]
+        if orphans:
+            count = len(orphans)
+            noun = "package" if count == 1 else "packages"
+            return CheckResult(
+                check_id="sys.orphans",
+                severity=Severity.WARN,
+                message=f"{count} orphan {noun} found",
+                remediation="run sudo pacman -Rns $(pacman -Qtdq)",
+                details={"orphans": orphans},
+            )
+
+        return CheckResult(
+            check_id="sys.orphans",
+            severity=Severity.PASS,
+            message="no orphan packages",
+            remediation=None,
+            details={"orphans": []},
+        )
+
+    def _check_pacnew(self, context: ScanContext) -> CheckResult:
+        files = detect_pacnew_files()
+        if files:
+            count = len(files)
+            noun = "file" if count == 1 else "files"
+            names = ", ".join(Path(f).name for f in files[:2])
+            return CheckResult(
+                check_id="sys.pacnew",
+                severity=Severity.WARN,
+                message=f"{count} .pacnew {noun} found ({names})",
+                remediation="run pacdiff -s to merge configuration files",
+                details={"files": files},
+            )
+
+        return CheckResult(
+            check_id="sys.pacnew",
+            severity=Severity.PASS,
+            message="no .pacnew files",
+            remediation=None,
+            details={"files": []},
+        )
+
+    def _check_failed_services(self, context: ScanContext) -> CheckResult:
+        if shutil.which("systemctl") is None:
+            return CheckResult(
+                check_id="sys.services",
+                severity=Severity.PASS,
+                message="systemctl not installed",
+                remediation=None,
+            )
+
+        failed_units: list[str] = []
+        sys_res = _run_capture(
+            ["systemctl", "--failed", "--no-legend", "--plain"],
+            timeout=10,
+        )
+        if sys_res.completed and sys_res.completed.returncode == 0:
+            for line in sys_res.completed.stdout.splitlines():
+                parts = line.strip().split()
+                if parts:
+                    failed_units.append(parts[0])
+
+        user_res = _run_capture(
+            ["systemctl", "--user", "--failed", "--no-legend", "--plain"],
+            timeout=10,
+        )
+        if user_res.completed and user_res.completed.returncode == 0:
+            for line in user_res.completed.stdout.splitlines():
+                parts = line.strip().split()
+                if parts:
+                    failed_units.append(f"{parts[0]} (user)")
+
+        if failed_units:
+            count = len(failed_units)
+            noun = "unit" if count == 1 else "units"
+            sample = ", ".join(failed_units[:2])
+            first_unit = failed_units[0].split()[0]
+            return CheckResult(
+                check_id="sys.services",
+                severity=Severity.FAIL,
+                message=f"{count} failed {noun} ({sample})",
+                remediation=f"run systemctl status {first_unit} to inspect",
+                details={"failed_units": failed_units},
+            )
+
+        return CheckResult(
+            check_id="sys.services",
+            severity=Severity.PASS,
+            message="no failed units",
+            remediation=None,
+            details={"failed_units": []},
+        )
+
+    def _check_flatpak_unused(self, context: ScanContext) -> CheckResult:
+        if shutil.which("flatpak") is None:
+            return CheckResult(
+                check_id="sys.flatpak-unused",
+                severity=Severity.PASS,
+                message="flatpak not installed",
+                remediation=None,
+            )
+
+        res = _run_capture(
+            ["flatpak", "uninstall", "--unused"],
+            timeout=15,
+            input_str="n\n",
+        )
+        if res.timed_out or res.completed is None:
+            return CheckResult(
+                check_id="sys.flatpak-unused",
+                severity=Severity.PASS,
+                message="could not check unused flatpaks",
+                remediation=None,
+            )
+
+        runtime_lines = [
+            line for line in res.completed.stdout.splitlines() if re.match(r"^\s*\d+\.\s+", line)
+        ]
+        if runtime_lines:
+            count = len(runtime_lines)
+            noun = "runtime" if count == 1 else "runtimes"
+            return CheckResult(
+                check_id="sys.flatpak-unused",
+                severity=Severity.WARN,
+                message=f"{count} unused {noun} found",
+                remediation="run flatpak uninstall --unused",
+                details={"unused_count": count},
+            )
+
+        return CheckResult(
+            check_id="sys.flatpak-unused",
+            severity=Severity.PASS,
+            message="no unused runtimes",
+            remediation=None,
+            details={"unused_count": 0},
+        )
+
+    def _check_journal(self, context: ScanContext) -> CheckResult:
+        if shutil.which("journalctl") is None:
+            return CheckResult(
+                check_id="sys.journal",
+                severity=Severity.PASS,
+                message="journalctl not installed",
+                remediation=None,
+            )
+
+        res = _run_capture(["journalctl", "--disk-usage"], timeout=10)
+        if res.completed and res.completed.returncode == 0:
+            match = re.search(
+                r"take up\s+([\d.]+\s*[KMGT]?i?B?)\s+in",
+                res.completed.stdout,
+                re.IGNORECASE,
+            )
+            if match:
+                size_str = match.group(1).strip()
+                is_large = False
+                if size_str.upper().endswith("G") or size_str.upper().endswith("GIB"):
+                    num_part = re.sub(r"[^\d.]", "", size_str)
+                    try:
+                        if float(num_part) >= 4.0:
+                            is_large = True
+                    except ValueError:
+                        pass
+
+                return CheckResult(
+                    check_id="sys.journal",
+                    severity=Severity.WARN if is_large else Severity.PASS,
+                    message=f"{size_str} in journal logs",
+                    remediation="run sudo journalctl --vacuum-size=1G" if is_large else None,
+                    details={"disk_usage": size_str},
+                )
+
+        return CheckResult(
+            check_id="sys.journal",
+            severity=Severity.PASS,
+            message="journal size normal",
+            remediation=None,
         )
 
 
@@ -618,23 +998,6 @@ def _is_mirror_failure(output: str) -> bool:
     return any(pattern in lowered for pattern in _NETWORK_FAILURE_PATTERNS)
 
 
-def _run_capture(command: list[str], timeout: int) -> _ExecResult:
-    try:
-        return _ExecResult(
-            completed=subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-        )
-    except subprocess.TimeoutExpired:
-        return _ExecResult(completed=None, timed_out=True)
-    except (OSError, subprocess.SubprocessError):
-        return _ExecResult(completed=None, timed_out=False)
-
-
 def _resolve_oh_my_zsh_path(context: ScanContext) -> str | None:
     zsh_env = os.environ.get("ZSH")
     if zsh_env:
@@ -674,8 +1037,13 @@ def _detect_oh_my_zsh_updates(omz_path: str) -> int:
 class SystemUpgradeService:
     """Runs sequential interactive system update commands."""
 
-    def __init__(self, is_online_fn: Callable[[], bool] = is_online) -> None:
+    def __init__(
+        self,
+        is_online_fn: Callable[[], bool] = is_online,
+        aur_helper_fn: Callable[[], str | None] = detect_aur_helper,
+    ) -> None:
         self._is_online_fn = is_online_fn
+        self._aur_helper_fn = aur_helper_fn
 
     def run(self, context: ScanContext, console: Console) -> int:
         if not self._is_online_fn():
@@ -706,22 +1074,32 @@ class SystemUpgradeService:
         had_error = False
         had_error |= self._refresh_mirrors(console)
 
-        if shutil.which("yay") is not None:
-            yay_error, is_net_failure = self._run_step(
-                [
-                    "yay",
-                    "-Syu",
-                    "--noconfirm",
-                    "--sudoloop",
-                    "--answerclean",
-                    "None",
-                    "--answerdiff",
-                    "None",
-                ],
-                console,
-                "System and AUR update",
-            )
-            if yay_error and is_net_failure:
+        aur_helper = self._aur_helper_fn()
+        update_cmd: list[str] | None = None
+        update_title = "System update"
+
+        if aur_helper == "paru":
+            update_cmd = ["paru", "-Syu", "--noconfirm"]
+            update_title = "System and AUR update (paru)"
+        elif aur_helper == "yay":
+            update_cmd = [
+                "yay",
+                "-Syu",
+                "--noconfirm",
+                "--sudoloop",
+                "--answerclean",
+                "None",
+                "--answerdiff",
+                "None",
+            ]
+            update_title = "System and AUR update (yay)"
+        elif shutil.which("pacman") is not None:
+            update_cmd = ["sudo", "pacman", "-Syu", "--noconfirm"]
+            update_title = "System update (pacman)"
+
+        if update_cmd is not None:
+            aur_error, is_net_failure = self._run_step(update_cmd, console, update_title)
+            if aur_error and is_net_failure:
                 console.print(
                     "[yellow]Mirror or network failure detected. "
                     "Attempting mirror recovery...[/yellow]"
@@ -733,36 +1111,49 @@ class SystemUpgradeService:
                     )
                     return 1
                 retry_error, _ = self._run_step(
-                    [
-                        "yay",
-                        "-Syu",
-                        "--noconfirm",
-                        "--sudoloop",
-                        "--answerclean",
-                        "None",
-                        "--answerdiff",
-                        "None",
-                    ],
+                    update_cmd,
                     console,
-                    "System and AUR update (retry after mirror recovery)",
+                    f"{update_title} (retry after mirror recovery)",
                 )
                 if retry_error:
                     console.print(
                         "[red]FAIL: Package upgrade aborted — persistent network failure.[/red]"
                     )
                     return 1
-            elif yay_error:
+            elif aur_error:
                 had_error = True
         else:
-            console.print("[dim]Skipping yay update: component is not installed.[/dim]")
+            console.print(
+                "[dim]Skipping package update: no supported package manager installed.[/dim]"
+            )
 
         if shutil.which("flatpak") is not None:
             flatpak_error, _ = self._run_step(
                 ["flatpak", "update", "-y"], console, "Flatpak update"
             )
             had_error |= flatpak_error
+            unused_error, _ = self._run_step(
+                ["flatpak", "uninstall", "--unused", "-y"],
+                console,
+                "Flatpak cleanup (unused runtimes)",
+            )
+            had_error |= unused_error
         else:
             console.print("[dim]Skipping Flatpak update: component is not installed.[/dim]")
+
+        if shutil.which("paccache") is not None:
+            cache_error, _ = self._run_step(
+                ["sudo", "paccache", "-rk2"],
+                console,
+                "Clean pacman cache (keep 2 versions)",
+            )
+            had_error |= cache_error
+            uninstalled_error, _ = self._run_step(
+                ["sudo", "paccache", "-ruk0"],
+                console,
+                "Clean uninstalled packages from cache",
+            )
+            had_error |= uninstalled_error
 
         omz_upgrade = context.home / ".oh-my-zsh" / "tools" / "upgrade.sh"
         if omz_upgrade.exists():
@@ -781,12 +1172,24 @@ class SystemUpgradeService:
         else:
             console.print("[dim]Skipping firmware update: component is not installed.[/dim]")
 
+        pacnew_files = detect_pacnew_files()
+        if pacnew_files:
+            console.print(
+                f"\n[bold yellow]Note: {len(pacnew_files)} .pacnew "
+                "configuration files found:[/bold yellow]"
+            )
+            for f in pacnew_files[:5]:
+                console.print(f"  [yellow]{f}[/yellow]")
+            console.print(
+                "[yellow]Run 'pacdiff' to review and merge configuration updates.[/yellow]"
+            )
+
         reboot_status = detect_reboot_status()
         if had_error:
             console.print("[yellow]System update finished with warnings/errors.[/yellow]")
             if reboot_status.required:
                 console.print(
-                    f"\n[bold yellow]⚠️  System reboot recommended:[/bold yellow] "
+                    f"\n[bold yellow]System reboot recommended:[/bold yellow] "
                     f"[yellow]{reboot_status.reason}[/yellow]"
                 )
             return 2
@@ -794,7 +1197,7 @@ class SystemUpgradeService:
         console.print("[green]System update completed successfully![/green]")
         if reboot_status.required:
             console.print(
-                f"\n[bold yellow]⚠️  System reboot recommended:[/bold yellow] "
+                f"\n[bold yellow]System reboot recommended:[/bold yellow] "
                 f"[yellow]{reboot_status.reason}[/yellow]"
             )
         return 0
