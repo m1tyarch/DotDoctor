@@ -137,18 +137,47 @@ profiles:
     assert "DotDoctor Scan" not in result.stdout
 
 
-def test_root_sys_runs_dry_run_report(monkeypatch) -> None:
+def test_root_default_runs_dry_run_report(monkeypatch) -> None:
     def fake_run(self, context, on_task_complete=None):
         if on_task_complete:
-            on_task_complete("sys:packages")
+            on_task_complete("sys.packages")
         return ScanReport(
             profile="system",
             results=[
                 CheckResult(
-                    check_id="sys:packages",
+                    check_id="sys.packages",
                     severity=Severity.OUTD,
                     message="Found 2 updates",
-                    remediation="Run dotdoctor --sysup to apply updates.",
+                    remediation="run dotdoctor --sysup to apply updates",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+    monkeypatch.setattr("dotdoctor.application.system_update.SystemDryRunService.run", fake_run)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "DotDoctor · system" in result.stdout
+    assert "sys.packages" in result.stdout
+
+
+def test_root_sys_runs_dry_run_report(monkeypatch) -> None:
+    def fake_run(self, context, on_task_complete=None):
+        if on_task_complete:
+            on_task_complete("sys.packages")
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.OUTD,
+                    message="Found 2 updates",
+                    remediation="run dotdoctor --sysup to apply updates",
                 )
             ],
         )
@@ -162,8 +191,42 @@ def test_root_sys_runs_dry_run_report(monkeypatch) -> None:
     result = runner.invoke(app, ["--sys"])
 
     assert result.exit_code == 0
-    assert "DotDoctor Scan (system)" in result.stdout
-    assert "sys:packages" in result.stdout
+    assert "DotDoctor · system" in result.stdout
+    assert "sys.packages" in result.stdout
+
+
+def test_root_env_runs_scan(monkeypatch) -> None:
+    called = []
+
+    def fake_scan(profile, config, disable_check, json_output, ui, fix):
+        called.append((profile, ui, fix))
+        import typer
+
+        raise typer.Exit(code=0)
+
+    monkeypatch.setattr("dotdoctor.cli.app._scan_impl", fake_scan)
+
+    result = runner.invoke(app, ["--env"])
+    assert result.exit_code == 0
+    assert called == [("python-dev", True, False)]
+
+    result_fix = runner.invoke(app, ["--env", "--fix"])
+    assert result_fix.exit_code == 0
+    assert called == [("python-dev", True, False), ("python-dev", True, True)]
+
+
+def test_root_conflicting_options() -> None:
+    result = runner.invoke(app, ["--env", "--sys"])
+    assert result.exit_code != 0
+    assert "Use either --env, --sys, or --sysup, not combined." in result.output
+
+    result = runner.invoke(app, ["--env", "--sysup"])
+    assert result.exit_code != 0
+    assert "Use either --env, --sys, or --sysup, not combined." in result.output
+
+    result = runner.invoke(app, ["--fix"])
+    assert result.exit_code != 0
+    assert "--fix requires --env." in result.output
 
 
 def test_root_sysup_runs_upgrade(monkeypatch) -> None:
@@ -177,3 +240,42 @@ def test_root_sysup_runs_upgrade(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "System updater stub" in result.stdout
+
+
+def test_cli_typo_option_single_line_stderr() -> None:
+    result = runner.invoke(app, ["--dev"])
+    assert result.exit_code == 2
+    assert result.output == "error: unknown option --dev. Did you mean --env?\n"
+    assert "Usage:" not in result.output
+    assert "Error" not in result.output
+
+
+def test_cli_unknown_option_no_suggestion_single_line_stderr() -> None:
+    result = runner.invoke(app, ["--completely-unrelated-unknown-option"])
+    assert result.exit_code == 2
+    assert result.output == (
+        "error: unknown option --completely-unrelated-unknown-option. "
+        "Run 'dotdoctor --help' for usage.\n"
+    )
+    assert "Usage:" not in result.output
+
+
+def test_cli_disable_check_legacy_id_alias(tmp_path: Path) -> None:
+    config = tmp_path / "dotdoctor.yml"
+    config.write_text(
+        """
+profiles:
+  python-dev:
+    enabled_checks:
+      - path.integrity
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        ["scan", "--config", str(config), "--disable-check", "path:integrity"],
+        env={"PATH": "/usr/bin"},
+    )
+    assert result.exit_code == 0
+    assert "path.integrity" not in result.stdout

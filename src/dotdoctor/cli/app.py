@@ -1,12 +1,16 @@
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 import typer
+import typer.rich_utils
 from rich.console import Console
 from rich.live import Live
 from rich.spinner import Spinner
 from rich.table import Table
+from rich.text import Text
+from typer._click import exceptions as _click_exceptions
 
 from dotdoctor.application.auto_fix import InteractiveAutoFixer
 from dotdoctor.application.system_update import SystemDryRunService, SystemUpgradeService
@@ -16,6 +20,33 @@ from dotdoctor.domain.context import ScanContext
 from dotdoctor.domain.models import CheckResult, ScanReport
 from dotdoctor.infrastructure.checks.registry import resolve_checks
 from dotdoctor.infrastructure.config_loader import ConfigError, load_config
+
+
+def _custom_rich_format_error(self: Any) -> None:
+    console = Console(stderr=True)
+    if isinstance(self, _click_exceptions.NoSuchOption):
+        opt = self.option_name
+        if self.possibilities:
+            possibilities_str = ", or ".join(self.possibilities)
+            msg = f"unknown option {opt}. Did you mean {possibilities_str}?"
+        else:
+            msg = f"unknown option {opt}. Run 'dotdoctor --help' for usage."
+    elif isinstance(self, _click_exceptions.BadParameter):
+        msg = getattr(self, "message", None) or self.format_message()
+        if msg.startswith("Invalid value: "):
+            msg = msg[len("Invalid value: ") :]
+    elif isinstance(self, _click_exceptions.ClickException):
+        msg = self.format_message()
+    else:
+        msg = str(self)
+
+    err_text = Text()
+    err_text.append("error: ", style="bold red")
+    err_text.append(msg)
+    console.print(err_text, soft_wrap=True)
+
+
+typer.rich_utils.rich_format_error = _custom_rich_format_error
 
 app = typer.Typer(help="DotDoctor: diagnose Linux development environment issues.")
 
@@ -45,10 +76,15 @@ FIX_OPTION = typer.Option(
     "--fix",
     help="Interactively apply safe auto-fixes for WARN/FAIL findings.",
 )
+ENV_OPTION = typer.Option(
+    False,
+    "--env",
+    help="Run development environment checks.",
+)
 SYS_OPTION = typer.Option(
     False,
     "--sys",
-    help="Run parallel dry-run system update checks.",
+    help="Run parallel dry-run system update checks (default).",
 )
 SYSUP_OPTION = typer.Option(
     False,
@@ -60,30 +96,35 @@ SYSUP_OPTION = typer.Option(
 @app.callback(invoke_without_command=True)
 def root(
     ctx: typer.Context,
+    env: bool = ENV_OPTION,
     fix: bool = FIX_OPTION,
     sys: bool = SYS_OPTION,
     sysup: bool = SYSUP_OPTION,
 ) -> None:
     if ctx.invoked_subcommand is None:
+        if env and (sys or sysup):
+            raise typer.BadParameter("Use either --env, --sys, or --sysup, not combined.")
         if sys and sysup:
             raise typer.BadParameter("Use either --sys or --sysup, not both.")
+        if fix and not env:
+            raise typer.BadParameter("--fix requires --env.")
 
-        if sys:
-            _system_dry_run_impl()
+        if env:
+            _scan_impl(
+                profile="python-dev",
+                config=None,
+                disable_check=[],
+                json_output=None,
+                ui=True,
+                fix=fix,
+            )
             return
 
         if sysup:
             _system_upgrade_impl()
             return
 
-        _scan_impl(
-            profile="python-dev",
-            config=None,
-            disable_check=[],
-            json_output=None,
-            ui=True,
-            fix=fix,
-        )
+        _system_dry_run_impl()
 
 
 @app.command("version")
@@ -261,6 +302,9 @@ def _run_scan(
                 active_check_id=None,
             )
         )
+
+    check_order = {check.check_id: i for i, check in enumerate(use_case.checks)}
+    results.sort(key=lambda r: check_order.get(r.check_id, 999))
 
     report = ScanReport(profile=context.profile, results=results)
     render_terminal_report(report, console)

@@ -53,3 +53,10 @@ class ScanReport(BaseModel):
         if summary["FAIL"] > 0:
             return 2
         return 0
+
+    def get_result(self, check_id: str) -> CheckResult | None:
+        norm = check_id.replace(":", ".")
+        for r in self.results:
+            if r.check_id == check_id or r.check_id.replace(":", ".") == norm:
+                return r
+        return None

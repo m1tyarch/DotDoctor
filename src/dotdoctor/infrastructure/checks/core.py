@@ -21,13 +21,16 @@ class BinaryCheck:
     def run(self, context: ScanContext) -> CheckResult:
         binary_path = shutil.which(self.requirement.name)
         if binary_path is None:
+            msg = (
+                f"not found (min {self.requirement.min_version})"
+                if self.requirement.min_version
+                else "not found"
+            )
             return CheckResult(
                 check_id=self.check_id,
                 severity=Severity.FAIL,
-                message=f"Required binary '{self.requirement.name}' was not found in PATH.",
-                remediation=(
-                    f"Install '{self.requirement.name}' and ensure it is available in PATH."
-                ),
+                message=msg,
+                remediation=f"install {self.requirement.name}",
                 details={"binary": self.requirement.name},
             )
 
@@ -36,7 +39,7 @@ class BinaryCheck:
             return CheckResult(
                 check_id=self.check_id,
                 severity=Severity.PASS,
-                message=f"Binary '{self.requirement.name}' is available.",
+                message="found",
                 remediation=None,
                 details=details,
             )
@@ -57,10 +60,8 @@ class BinaryCheck:
             return CheckResult(
                 check_id=self.check_id,
                 severity=Severity.WARN,
-                message=f"Binary '{self.requirement.name}' found, but version check failed.",
-                remediation=(
-                    "Run the binary manually with --version " "and verify installation health."
-                ),
+                message="version check failed",
+                remediation=f"verify {self.requirement.name} installation",
                 details={**details, "error": str(exc)},
             )
 
@@ -68,26 +69,23 @@ class BinaryCheck:
             return CheckResult(
                 check_id=self.check_id,
                 severity=Severity.WARN,
-                message=f"Could not parse version for '{self.requirement.name}'.",
-                remediation="Check version output format and adjust parser/config if needed.",
+                message="could not parse version",
+                remediation="check version output format",
                 details=details,
             )
 
+        current_v = ".".join(str(x) for x in parsed_current)
         if not is_version_at_least(parsed_current, parsed_required):
             return CheckResult(
                 check_id=self.check_id,
                 severity=Severity.FAIL,
-                message=(
-                    f"Binary '{self.requirement.name}' version is too old "
-                    f"(required {self.requirement.min_version})."
-                ),
+                message=f"{current_v} (min {self.requirement.min_version})",
                 remediation=(
-                    f"Upgrade '{self.requirement.name}' to at least "
-                    f"{self.requirement.min_version}."
+                    f"upgrade {self.requirement.name} to at least {self.requirement.min_version}"
                 ),
                 details={
                     **details,
-                    "current": ".".join(str(x) for x in parsed_current),
+                    "current": current_v,
                     "required": ".".join(str(x) for x in parsed_required),
                 },
             )
@@ -95,14 +93,11 @@ class BinaryCheck:
         return CheckResult(
             check_id=self.check_id,
             severity=Severity.PASS,
-            message=(
-                f"Binary '{self.requirement.name}' meets minimum version "
-                f"{self.requirement.min_version}."
-            ),
+            message=f"{current_v} (min {self.requirement.min_version})",
             remediation=None,
             details={
                 **details,
-                "current": ".".join(str(x) for x in parsed_current),
+                "current": current_v,
                 "required": ".".join(str(x) for x in parsed_required),
             },
         )
@@ -116,8 +111,8 @@ class PathIntegrityCheck:
             return CheckResult(
                 check_id=self.check_id,
                 severity=Severity.FAIL,
-                message="PATH variable is empty.",
-                remediation="Export PATH with required tool directories.",
+                message="PATH variable is empty",
+                remediation="export PATH in your shell config",
                 details={"path": context.path_value},
             )
 
@@ -147,16 +142,33 @@ class PathIntegrityCheck:
             return CheckResult(
                 check_id=self.check_id,
                 severity=Severity.PASS,
-                message="PATH looks healthy (no empty, duplicate, or missing entries).",
+                message="no empty, duplicate or missing entries",
                 remediation=None,
                 details=details,
             )
 
+        if duplicates and not missing_entries and not empty_entries:
+            dup_str = ", ".join(duplicates)
+            prefix = "duplicate entry" if len(duplicates) == 1 else "duplicate entries"
+            msg = f"{prefix}: {dup_str}"
+            rem = "remove the duplicate from PATH in your shell config"
+        elif missing_entries and not duplicates and not empty_entries:
+            miss_str = ", ".join(missing_entries)
+            prefix = "missing entry" if len(missing_entries) == 1 else "missing entries"
+            msg = f"{prefix}: {miss_str}"
+            rem = "remove missing directories from PATH in your shell config"
+        elif empty_entries and not duplicates and not missing_entries:
+            msg = "empty entry in PATH"
+            rem = "remove empty colon entries from PATH in your shell config"
+        else:
+            msg = "empty, duplicate or missing entries in PATH"
+            rem = "clean PATH in your shell config"
+
         return CheckResult(
             check_id=self.check_id,
             severity=Severity.WARN,
-            message="PATH has quality issues (empty/duplicate/missing entries).",
-            remediation="Clean PATH in shell config and remove broken or duplicated entries.",
+            message=msg,
+            remediation=rem,
             details=details,
         )
 
@@ -183,8 +195,8 @@ class ShellConfigCheck:
                 return CheckResult(
                     check_id=self.check_id,
                     severity=Severity.WARN,
-                    message="Could not fully inspect shell config files.",
-                    remediation="Check file permissions and rerun scan.",
+                    message="could not inspect shell config files",
+                    remediation="check file permissions",
                     details={"error": str(exc), "shell": context.shell},
                 )
 
@@ -199,8 +211,8 @@ class ShellConfigCheck:
             return CheckResult(
                 check_id=self.check_id,
                 severity=Severity.WARN,
-                message="No known shell config files found.",
-                remediation="Create ~/.bashrc or ~/.zshrc and keep PATH/export logic there.",
+                message="no known shell config files found",
+                remediation="create ~/.bashrc or ~/.zshrc",
                 details=details,
             )
 
@@ -208,15 +220,15 @@ class ShellConfigCheck:
             return CheckResult(
                 check_id=self.check_id,
                 severity=Severity.WARN,
-                message="Shell config contains suspicious PATH patterns.",
-                remediation="Remove duplicated/self-referential PATH exports.",
+                message="suspicious PATH patterns in shell config",
+                remediation="remove duplicated/self-referential PATH exports",
                 details=details,
             )
 
         return CheckResult(
             check_id=self.check_id,
             severity=Severity.PASS,
-            message="Shell config files look sane.",
+            message="ok",
             remediation=None,
             details=details,
         )
@@ -253,8 +265,8 @@ class PermissionsCheck:
             return CheckResult(
                 check_id=self.check_id,
                 severity=Severity.FAIL,
-                message="Permission denied for required development directories.",
-                remediation="Fix ownership/permissions for denied paths.",
+                message=f"permission denied: {', '.join(denied)}",
+                remediation="fix directory permissions with chmod or chown",
                 details=details,
             )
 
@@ -262,15 +274,15 @@ class PermissionsCheck:
             return CheckResult(
                 check_id=self.check_id,
                 severity=Severity.WARN,
-                message="Some configured development directories do not exist.",
-                remediation="Create missing directories or update profile permission_paths.",
+                message=f"missing directories: {', '.join(missing)}",
+                remediation="create missing directories",
                 details=details,
             )
 
         return CheckResult(
             check_id=self.check_id,
             severity=Severity.PASS,
-            message="Required development directories are readable and writable.",
+            message="ok",
             remediation=None,
             details=details,
         )

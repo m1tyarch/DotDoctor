@@ -148,13 +148,27 @@ def detect_disk_space_status(
     root_str = _format_bytes(root_free)
     boot_str = _format_bytes(boot_free)
 
+    same_fs = False
+    try:
+        root_p = Path(root_path)
+        boot_p = Path(boot_path)
+        if root_p.exists() and boot_p.exists():
+            same_fs = root_p.stat().st_dev == boot_p.stat().st_dev
+    except OSError:
+        same_fs = False
+
+    if same_fs:
+        free_desc = f"{root_str} free on / and /boot"
+    else:
+        free_desc = f"/ {root_str} free \u00b7 /boot {boot_str} free"
+
     if root_free < min_root_crit_bytes or boot_free < min_boot_crit_bytes:
         return DiskSpaceStatus(
             root_free_bytes=root_free,
             boot_free_bytes=boot_free,
             severity=Severity.FAIL,
-            message=f"Critically low disk space (/ free: {root_str}, /boot free: {boot_str}).",
-            remediation="Free up disk space immediately before updating packages.",
+            message=f"critically low disk space ({free_desc})",
+            remediation="free up disk space immediately before updating packages",
         )
 
     if root_free < min_root_warn_bytes or boot_free < min_boot_warn_bytes:
@@ -162,15 +176,15 @@ def detect_disk_space_status(
             root_free_bytes=root_free,
             boot_free_bytes=boot_free,
             severity=Severity.WARN,
-            message=f"Low disk space (/ free: {root_str}, /boot free: {boot_str}).",
-            remediation="Consider cleaning package caches (paccache -r) before updating.",
+            message=f"low disk space ({free_desc})",
+            remediation="clean package caches (paccache -r) before updating",
         )
 
     return DiskSpaceStatus(
         root_free_bytes=root_free,
         boot_free_bytes=boot_free,
         severity=Severity.PASS,
-        message=f"Disk space is healthy (/ free: {root_str}, /boot free: {boot_str}).",
+        message=free_desc,
         remediation=None,
     )
 
@@ -192,27 +206,22 @@ class SystemDryRunService:
         if not self._is_online_fn():
             return [
                 SystemCheckTask(
-                    check_id="sys:network",
+                    check_id="sys.network",
                     label="Checking network connection...",
                     runner=lambda: CheckResult(
-                        check_id="sys:network",
+                        check_id="sys.network",
                         severity=Severity.FAIL,
-                        message=(
-                            "No active internet connection detected — "
-                            "online update checks skipped."
-                        ),
-                        remediation=(
-                            "Connect to the internet to check for package " "and system updates."
-                        ),
+                        message="no active internet connection",
+                        remediation="connect to the internet and retry",
                     ),
                 ),
                 SystemCheckTask(
-                    check_id="sys:reboot",
+                    check_id="sys.reboot",
                     label="Checking reboot status...",
                     runner=lambda: self._check_reboot(context),
                 ),
                 SystemCheckTask(
-                    check_id="sys:disk",
+                    check_id="sys.disk",
                     label="Checking disk space...",
                     runner=lambda: self._check_disk_space(context),
                 ),
@@ -220,27 +229,27 @@ class SystemDryRunService:
 
         tasks: list[SystemCheckTask] = [
             SystemCheckTask(
-                check_id="sys:packages",
+                check_id="sys.packages",
                 label="Checking Arch packages...",
                 runner=lambda: self._check_arch_packages(context),
             ),
             SystemCheckTask(
-                check_id="sys:flatpak",
+                check_id="sys.flatpak",
                 label="Scanning Flatpak packages...",
                 runner=lambda: self._check_flatpak(context),
             ),
             SystemCheckTask(
-                check_id="sys:firmware",
+                check_id="sys.firmware",
                 label="Querying firmware updates...",
                 runner=lambda: self._check_firmware(context),
             ),
             SystemCheckTask(
-                check_id="sys:reboot",
+                check_id="sys.reboot",
                 label="Checking reboot status...",
                 runner=lambda: self._check_reboot(context),
             ),
             SystemCheckTask(
-                check_id="sys:disk",
+                check_id="sys.disk",
                 label="Checking disk space...",
                 runner=lambda: self._check_disk_space(context),
             ),
@@ -249,7 +258,7 @@ class SystemDryRunService:
         if shutil.which("yay") is not None:
             tasks.append(
                 SystemCheckTask(
-                    check_id="sys:aur",
+                    check_id="sys.aur",
                     label="Checking AUR packages...",
                     runner=lambda: self._check_aur_packages(context),
                 )
@@ -259,7 +268,7 @@ class SystemDryRunService:
         if omz_path is not None:
             tasks.append(
                 SystemCheckTask(
-                    check_id="sys:shell-omz",
+                    check_id="sys.shell-omz",
                     label="Checking Oh-My-Zsh updates...",
                     runner=lambda: self._check_oh_my_zsh(omz_path),
                 )
@@ -313,125 +322,123 @@ class SystemDryRunService:
     def _check_arch_packages(self, context: ScanContext) -> CheckResult:
         if shutil.which("checkupdates") is None:
             return CheckResult(
-                check_id="sys:packages",
+                check_id="sys.packages",
                 severity=Severity.PASS,
-                message="checkupdates is not installed; skipping Arch package update check.",
+                message="checkupdates not installed",
                 remediation=None,
             )
 
         result = _run_capture(["checkupdates"], timeout=60)
         if result.timed_out:
             return CheckResult(
-                check_id="sys:packages",
+                check_id="sys.packages",
                 severity=Severity.FAIL,
-                message="checkupdates timed out — mirror or network connection failure.",
-                remediation=(
-                    "Run rate-mirrors or reflector to refresh your mirror list, " "then retry."
-                ),
+                message="package check timed out",
+                remediation="refresh mirror list and retry",
             )
         if result.completed is None:
             return CheckResult(
-                check_id="sys:packages",
+                check_id="sys.packages",
                 severity=Severity.WARN,
-                message="Could not run checkupdates.",
-                remediation="Run checkupdates manually and inspect command health.",
+                message="could not run checkupdates",
+                remediation="run checkupdates manually to inspect error",
             )
         completed = result.completed
         lines = [line for line in completed.stdout.splitlines() if line.strip()]
         if completed.returncode == 2 or not lines:
-            return _result_for_count("sys:packages", 0)
+            return _result_for_count("sys.packages", 0)
 
         if completed.returncode not in {0, 2}:
             return CheckResult(
-                check_id="sys:packages",
+                check_id="sys.packages",
                 severity=Severity.FAIL,
-                message="checkupdates failed — possible pacman database fetch error.",
-                remediation="Verify mirror availability and run pacman -Sy manually.",
+                message="package check failed",
+                remediation="verify mirror availability and run pacman -Sy",
             )
 
-        return _result_for_count("sys:packages", len(lines))
+        return _result_for_count("sys.packages", len(lines))
 
     def _check_flatpak(self, context: ScanContext) -> CheckResult:
         if shutil.which("flatpak") is None:
             return CheckResult(
-                check_id="sys:flatpak",
+                check_id="sys.flatpak",
                 severity=Severity.PASS,
-                message="flatpak is not installed; skipping Flatpak update check.",
+                message="flatpak not installed",
                 remediation=None,
             )
 
         result = _run_capture(["flatpak", "remote-ls", "--updates"], timeout=60)
         if result.timed_out:
             return CheckResult(
-                check_id="sys:flatpak",
+                check_id="sys.flatpak",
                 severity=Severity.FAIL,
-                message="Flatpak update check timed out — network connection failure.",
-                remediation="Check network connectivity and retry.",
+                message="Flatpak check timed out",
+                remediation="check network connectivity and retry",
             )
         if result.completed is None:
             return CheckResult(
-                check_id="sys:flatpak",
+                check_id="sys.flatpak",
                 severity=Severity.WARN,
-                message="Could not run Flatpak update check.",
-                remediation="Run flatpak remote-ls --updates manually.",
+                message="could not run Flatpak check",
+                remediation="run flatpak remote-ls --updates manually",
             )
         if result.completed.returncode != 0:
             return CheckResult(
-                check_id="sys:flatpak",
+                check_id="sys.flatpak",
                 severity=Severity.FAIL,
-                message=f"flatpak remote-ls failed (exit={result.completed.returncode}).",
-                remediation="Check Flatpak remote configuration and network connectivity.",
+                message=f"flatpak check failed (exit={result.completed.returncode})",
+                remediation="check Flatpak remote configuration",
             )
         lines = [line for line in result.completed.stdout.splitlines() if line.strip()]
-        return _result_for_count("sys:flatpak", len(lines))
+        return _result_for_count("sys.flatpak", len(lines))
 
     def _check_firmware(self, context: ScanContext) -> CheckResult:
         if shutil.which("fwupdmgr") is None:
             return CheckResult(
-                check_id="sys:firmware",
+                check_id="sys.firmware",
                 severity=Severity.PASS,
-                message="fwupdmgr is not installed; skipping firmware update check.",
+                message="fwupd not installed",
                 remediation=None,
             )
 
         refresh = _run_capture(["fwupdmgr", "refresh"], timeout=90)
         if refresh.timed_out:
             return CheckResult(
-                check_id="sys:firmware",
+                check_id="sys.firmware",
                 severity=Severity.FAIL,
-                message="fwupdmgr refresh timed out — network connection failure.",
-                remediation="Check network connectivity and retry.",
+                message="fwupdmgr refresh timed out",
+                remediation="check network connectivity and retry",
             )
         if refresh.completed is None:
             return CheckResult(
-                check_id="sys:firmware",
+                check_id="sys.firmware",
                 severity=Severity.WARN,
-                message="Could not refresh firmware metadata.",
-                remediation="Run fwupdmgr refresh manually.",
+                message="could not refresh firmware metadata",
+                remediation="run fwupdmgr refresh manually",
             )
 
         updates_result = _run_capture(["fwupdmgr", "get-updates"], timeout=90)
         if updates_result.timed_out:
             return CheckResult(
-                check_id="sys:firmware",
+                check_id="sys.firmware",
                 severity=Severity.FAIL,
-                message="fwupdmgr get-updates timed out — network connection failure.",
-                remediation="Check network connectivity and retry.",
+                message="fwupdmgr get-updates timed out",
+                remediation="check network connectivity and retry",
             )
         if updates_result.completed is None:
             return CheckResult(
-                check_id="sys:firmware",
+                check_id="sys.firmware",
                 severity=Severity.WARN,
-                message="Could not run firmware update check.",
-                remediation="Run fwupdmgr get-updates manually.",
+                message="could not run firmware update check",
+                remediation="run fwupdmgr get-updates manually",
             )
         completed = updates_result.completed
 
         if completed.returncode == 2:
             return CheckResult(
-                check_id="sys:firmware",
+                check_id="sys.firmware",
                 severity=Severity.PASS,
-                message="No firmware updates found",
+                message="no firmware updates",
                 remediation=None,
                 details={"updates": 0},
             )
@@ -439,38 +446,38 @@ class SystemDryRunService:
         update_count = _parse_fwupdmgr_updates(completed.stdout)
         if completed.returncode not in {0, 2} and update_count == 0:
             return CheckResult(
-                check_id="sys:firmware",
+                check_id="sys.firmware",
                 severity=Severity.WARN,
-                message="Firmware check returned an unexpected exit code.",
-                remediation="Run fwupdmgr get-updates manually and inspect output.",
+                message="firmware check returned unexpected exit code",
+                remediation="run fwupdmgr get-updates manually and inspect output",
             )
 
         if update_count == 0:
             return CheckResult(
-                check_id="sys:firmware",
+                check_id="sys.firmware",
                 severity=Severity.PASS,
-                message="No firmware updates found",
+                message="no firmware updates",
                 remediation=None,
                 details={"updates": 0},
             )
 
-        return _result_for_count("sys:firmware", update_count)
+        return _result_for_count("sys.firmware", update_count)
 
     def _check_oh_my_zsh(self, omz_path: str) -> CheckResult:
         update_count = _detect_oh_my_zsh_updates(omz_path)
         if update_count > 0:
             return CheckResult(
-                check_id="sys:shell-omz",
+                check_id="sys.shell-omz",
                 severity=Severity.OUTD,
-                message=f"Found {update_count} updates",
-                remediation="Run dotdoctor --sysup to apply updates.",
+                message=f"{update_count} update{'s' if update_count != 1 else ''} available",
+                remediation="run dotdoctor --sysup to apply updates",
                 details={"updates": update_count},
             )
 
         return CheckResult(
-            check_id="sys:shell-omz",
+            check_id="sys.shell-omz",
             severity=Severity.PASS,
-            message="No updates found",
+            message="up to date",
             remediation=None,
             details={"updates": 0},
         )
@@ -478,11 +485,12 @@ class SystemDryRunService:
     def _check_reboot(self, context: ScanContext) -> CheckResult:
         status = detect_reboot_status()
         if status.required:
+            reason = (status.reason or "reboot required").rstrip(".")
             return CheckResult(
-                check_id="sys:reboot",
+                check_id="sys.reboot",
                 severity=Severity.WARN,
-                message=status.reason or "Reboot required.",
-                remediation="Reboot the system to apply kernel or core updates.",
+                message=f"reboot required: {reason}",
+                remediation="reboot system to load new kernel or packages",
                 details={
                     "running_kernel": status.running_kernel,
                     "installed_kernels": status.installed_kernels,
@@ -491,9 +499,9 @@ class SystemDryRunService:
             )
 
         return CheckResult(
-            check_id="sys:reboot",
+            check_id="sys.reboot",
             severity=Severity.PASS,
-            message="System is running the latest installed kernel.",
+            message="no reboot required",
             remediation=None,
             details={
                 "running_kernel": status.running_kernel,
@@ -505,7 +513,7 @@ class SystemDryRunService:
     def _check_disk_space(self, context: ScanContext) -> CheckResult:
         status = detect_disk_space_status()
         return CheckResult(
-            check_id="sys:disk",
+            check_id="sys.disk",
             severity=status.severity,
             message=status.message,
             remediation=status.remediation,
@@ -519,17 +527,17 @@ class SystemDryRunService:
         result = _run_capture(["yay", "-Qua"], timeout=60)
         if result.timed_out:
             return CheckResult(
-                check_id="sys:aur",
+                check_id="sys.aur",
                 severity=Severity.FAIL,
-                message="AUR update check timed out — network or mirror failure.",
-                remediation="Run rate-mirrors to refresh mirror list, then retry.",
+                message="AUR update check timed out",
+                remediation="refresh mirror list and retry",
             )
         if result.completed is None:
             return CheckResult(
-                check_id="sys:aur",
+                check_id="sys.aur",
                 severity=Severity.WARN,
-                message="Could not run AUR update check.",
-                remediation="Run yay -Qua manually and inspect command health.",
+                message="could not run AUR update check",
+                remediation="run yay -Qua manually",
             )
         lines = [line.strip() for line in result.completed.stdout.splitlines() if line.strip()]
         flagged = [line for line in lines if _AUR_FLAGGED_RE.search(line)]
@@ -537,31 +545,28 @@ class SystemDryRunService:
 
         if not lines:
             return CheckResult(
-                check_id="sys:aur",
+                check_id="sys.aur",
                 severity=Severity.PASS,
-                message="No AUR updates found.",
+                message="up to date",
                 remediation=None,
                 details={"updates": 0, "flagged": 0},
             )
         if flagged:
             return CheckResult(
-                check_id="sys:aur",
+                check_id="sys.aur",
                 severity=Severity.OUTD,
                 message=(
-                    f"Found {len(regular)} AUR update(s) and {len(flagged)} "
-                    "flagged out-of-date package(s)."
+                    f"{len(lines)} AUR update{'s' if len(lines) != 1 else ''} available "
+                    f"({len(flagged)} flagged out-of-date)"
                 ),
-                remediation=(
-                    "Run dotdoctor --sysup to apply available AUR updates. "
-                    "Flagged packages require upstream or maintainer action."
-                ),
+                remediation="run dotdoctor --sysup to apply updates",
                 details={"updates": len(regular), "flagged": len(flagged)},
             )
         return CheckResult(
-            check_id="sys:aur",
+            check_id="sys.aur",
             severity=Severity.OUTD,
-            message=f"Found {len(regular)} AUR update(s).",
-            remediation="Run dotdoctor --sysup to apply updates.",
+            message=f"{len(regular)} AUR update{'s' if len(regular) != 1 else ''} available",
+            remediation="run dotdoctor --sysup to apply updates",
             details={"updates": len(regular), "flagged": 0},
         )
 
@@ -571,15 +576,16 @@ def _result_for_count(check_id: str, updates: int) -> CheckResult:
         return CheckResult(
             check_id=check_id,
             severity=Severity.OUTD,
-            message=f"Found {updates} updates",
-            remediation="Run dotdoctor --sysup to apply updates.",
+            message=f"{updates} update{'s' if updates != 1 else ''} available",
+            remediation="run dotdoctor --sysup to apply updates",
             details={"updates": updates},
         )
 
+    msg = "no firmware updates" if check_id.endswith("firmware") else "up to date"
     return CheckResult(
         check_id=check_id,
         severity=Severity.PASS,
-        message="No updates found",
+        message=msg,
         remediation=None,
         details={"updates": 0},
     )

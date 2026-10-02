@@ -79,13 +79,13 @@ def test_system_dry_run_marks_outd_when_updates_detected(monkeypatch, tmp_path: 
     report = service.run(_context(tmp_path))
 
     by_id = {item.check_id: item for item in report.results}
-    assert by_id["sys:packages"].severity is Severity.OUTD
-    assert by_id["sys:flatpak"].severity is Severity.OUTD
-    assert by_id["sys:firmware"].severity is Severity.OUTD
-    assert by_id["sys:aur"].severity is Severity.OUTD
-    assert by_id["sys:shell-omz"].severity is Severity.PASS
-    assert by_id["sys:reboot"].severity is Severity.PASS
-    assert by_id["sys:disk"].severity is Severity.PASS
+    assert by_id["sys.packages"].severity is Severity.OUTD
+    assert by_id["sys.flatpak"].severity is Severity.OUTD
+    assert by_id["sys.firmware"].severity is Severity.OUTD
+    assert by_id["sys.aur"].severity is Severity.OUTD
+    assert by_id["sys.shell-omz"].severity is Severity.PASS
+    assert by_id["sys.reboot"].severity is Severity.PASS
+    assert by_id["sys.disk"].severity is Severity.PASS
 
 
 def test_system_dry_run_skips_missing_components(monkeypatch, tmp_path: Path) -> None:
@@ -113,7 +113,7 @@ def test_system_dry_run_skips_missing_components(monkeypatch, tmp_path: Path) ->
 
     report = service.run(_context(tmp_path))
 
-    assert "sys:shell-omz" not in {item.check_id for item in report.results}
+    assert "sys.shell-omz" not in {item.check_id for item in report.results}
     assert all(item.severity is Severity.PASS for item in report.results)
 
 
@@ -146,7 +146,7 @@ def test_system_dry_run_omz_uses_zsh_env_and_detects_updates(monkeypatch, tmp_pa
 
     report = service.run(_context(tmp_path))
     by_id = {item.check_id: item for item in report.results}
-    assert by_id["sys:shell-omz"].severity is Severity.OUTD
+    assert by_id["sys.shell-omz"].severity is Severity.OUTD
 
 
 def test_system_dry_run_treats_checkupdates_exit_two_as_no_updates(
@@ -171,7 +171,7 @@ def test_system_dry_run_treats_checkupdates_exit_two_as_no_updates(
 
     report = service.run(_context(tmp_path))
     by_id = {item.check_id: item for item in report.results}
-    assert by_id["sys:packages"].severity is Severity.PASS
+    assert by_id["sys.packages"].severity is Severity.PASS
 
 
 def test_system_dry_run_firmware_latest_available_is_not_counted_as_updates(
@@ -207,8 +207,8 @@ def test_system_dry_run_firmware_latest_available_is_not_counted_as_updates(
 
     report = service.run(_context(tmp_path))
     by_id = {item.check_id: item for item in report.results}
-    assert by_id["sys:firmware"].severity is Severity.PASS
-    assert by_id["sys:firmware"].message == "No firmware updates found"
+    assert by_id["sys.firmware"].severity is Severity.PASS
+    assert by_id["sys.firmware"].message == "no firmware updates"
 
 
 def test_system_dry_run_firmware_detects_explicit_version_transition(
@@ -238,7 +238,7 @@ def test_system_dry_run_firmware_detects_explicit_version_transition(
 
     report = service.run(_context(tmp_path))
     by_id = {item.check_id: item for item in report.results}
-    assert by_id["sys:firmware"].severity is Severity.OUTD
+    assert by_id["sys.firmware"].severity is Severity.OUTD
 
 
 def test_system_upgrade_runs_steps_and_reports_success(monkeypatch, tmp_path: Path) -> None:
@@ -306,9 +306,9 @@ def test_check_aur_detects_flagged_packages(monkeypatch, tmp_path: Path) -> None
 
     report = service.run(_context(tmp_path))
     by_id = {item.check_id: item for item in report.results}
-    assert by_id["sys:aur"].severity is Severity.OUTD
-    assert by_id["sys:aur"].details["flagged"] == 1
-    assert by_id["sys:aur"].details["updates"] == 1
+    assert by_id["sys.aur"].severity is Severity.OUTD
+    assert by_id["sys.aur"].details["flagged"] == 1
+    assert by_id["sys.aur"].details["updates"] == 1
 
 
 def test_check_arch_timeout_produces_fail(monkeypatch, tmp_path: Path) -> None:
@@ -327,7 +327,7 @@ def test_check_arch_timeout_produces_fail(monkeypatch, tmp_path: Path) -> None:
 
     report = service.run(_context(tmp_path))
     by_id = {item.check_id: item for item in report.results}
-    assert by_id["sys:packages"].severity is Severity.FAIL
+    assert by_id["sys.packages"].severity is Severity.FAIL
 
 
 def test_system_upgrade_network_failure_triggers_mirror_recovery(
@@ -493,9 +493,9 @@ def test_system_dry_run_warns_when_reboot_required(monkeypatch, tmp_path: Path) 
 
     report = service.run(_context(tmp_path))
     by_id = {item.check_id: item for item in report.results}
-    assert by_id["sys:reboot"].severity is Severity.WARN
-    assert "7.1.9" in by_id["sys:reboot"].message
-    assert by_id["sys:reboot"].details["reboot_required"] is True
+    assert by_id["sys.reboot"].severity is Severity.WARN
+    assert "7.1.9" in by_id["sys.reboot"].message
+    assert by_id["sys.reboot"].details["reboot_required"] is True
 
 
 def test_system_upgrade_prints_reboot_warning_when_needed(monkeypatch, tmp_path: Path) -> None:
@@ -538,7 +538,7 @@ def test_detect_disk_space_status_healthy(tmp_path: Path) -> None:
         min_boot_crit_bytes=100,
     )
     assert status.severity is Severity.PASS
-    assert "healthy" in status.message
+    assert "free on" in status.message
 
 
 def test_detect_disk_space_status_warn(tmp_path: Path) -> None:
@@ -551,7 +551,7 @@ def test_detect_disk_space_status_warn(tmp_path: Path) -> None:
         min_boot_crit_bytes=100,
     )
     assert status.severity is Severity.WARN
-    assert "Low disk space" in status.message
+    assert "low disk space" in status.message
 
 
 def test_detect_disk_space_status_critical_fail(tmp_path: Path) -> None:
@@ -564,7 +564,7 @@ def test_detect_disk_space_status_critical_fail(tmp_path: Path) -> None:
         min_boot_crit_bytes=100,
     )
     assert status.severity is Severity.FAIL
-    assert "Critically low" in status.message
+    assert "critically low disk space" in status.message
 
 
 def test_system_upgrade_aborts_on_critical_disk_space(monkeypatch, tmp_path: Path) -> None:
@@ -633,15 +633,15 @@ def test_system_dry_run_offline_skips_network_checks(monkeypatch, tmp_path: Path
     report = service.run(_context(tmp_path))
     by_id = {item.check_id: item for item in report.results}
 
-    assert "sys:network" in by_id
-    assert by_id["sys:network"].severity is Severity.FAIL
-    assert "No active internet connection" in by_id["sys:network"].message
-    assert "sys:packages" not in by_id
-    assert "sys:aur" not in by_id
-    assert "sys:flatpak" not in by_id
-    assert "sys:firmware" not in by_id
-    assert "sys:reboot" in by_id
-    assert "sys:disk" in by_id
+    assert "sys.network" in by_id
+    assert by_id["sys.network"].severity is Severity.FAIL
+    assert "no active internet connection" in by_id["sys.network"].message
+    assert "sys.packages" not in by_id
+    assert "sys.aur" not in by_id
+    assert "sys.flatpak" not in by_id
+    assert "sys.firmware" not in by_id
+    assert "sys.reboot" in by_id
+    assert "sys.disk" in by_id
 
 
 def test_system_upgrade_offline_aborts_immediately(tmp_path: Path) -> None:

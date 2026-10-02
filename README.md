@@ -6,10 +6,10 @@ DotDoctor is a Linux CLI utility for diagnosing development environment issues a
 Key Features
 ------------
 
-- Development environment checks (binary availability, version checks, PATH integrity, shell config sanity, directory permissions)
+- System dry-run update audit by default (`dotdoctor` or `--sys`) for Arch packages, AUR, Flatpak, firmware, and Oh-My-Zsh
+- Development environment checks (`--env` or `scan`) (binary availability, version checks, PATH integrity, shell config sanity, directory permissions)
 - Live terminal dashboard and plain report mode
-- Optional interactive auto-fix flow for actionable findings
-- System dry-run update audit (`--sys`) for Arch packages, AUR, Flatpak, firmware, and Oh-My-Zsh
+- Optional interactive auto-fix flow for actionable findings (`--fix`)
 - System upgrade flow (`--sysup`) with strict failure handling
 
 System Update Safety Model
@@ -53,10 +53,22 @@ pip install -e .[dev]
 Usage
 -----
 
-Run default scan:
+Run default system dry-run update checks:
 
 ```bash
 dotdoctor
+```
+
+Run development environment scan:
+
+```bash
+dotdoctor --env
+```
+
+Run development environment scan with auto-fix:
+
+```bash
+dotdoctor --env --fix
 ```
 
 Run profile explicitly:
@@ -75,12 +87,6 @@ Export JSON report:
 
 ```bash
 dotdoctor scan --json-output artifacts/report.json
-```
-
-Run system dry-run checks:
-
-```bash
-dotdoctor --sys
 ```
 
 Run system upgrades:
