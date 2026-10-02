@@ -17,7 +17,7 @@ from dotdoctor.application.system_update import SystemDryRunService, SystemUpgra
 from dotdoctor.application.use_cases import RunScanUseCase
 from dotdoctor.cli.render import build_live_dashboard, render_terminal_report
 from dotdoctor.domain.context import ScanContext
-from dotdoctor.domain.models import CheckResult, ScanReport
+from dotdoctor.domain.models import CheckResult, ScanReport, Severity
 from dotdoctor.infrastructure.checks.registry import resolve_checks
 from dotdoctor.infrastructure.config_loader import ConfigError, load_config
 
@@ -106,8 +106,8 @@ def root(
             raise typer.BadParameter("Use either --env, --sys, or --sysup, not combined.")
         if sys and sysup:
             raise typer.BadParameter("Use either --sys or --sysup, not both.")
-        if fix and not env:
-            raise typer.BadParameter("--fix requires --env.")
+        if fix and sysup:
+            raise typer.BadParameter("Use either --fix or --sysup, not both.")
 
         if env:
             _scan_impl(
@@ -124,7 +124,7 @@ def root(
             _system_upgrade_impl()
             return
 
-        _system_dry_run_impl()
+        _system_dry_run_impl(fix_mode=fix)
 
 
 @app.command("version")
@@ -197,7 +197,14 @@ def _scan_impl(
         raise typer.Exit(code=3) from None
 
 
-def _system_dry_run_impl() -> None:
+def _safe_confirm(prompt: str, default: bool = True) -> bool:
+    try:
+        return typer.confirm(prompt, default=default)
+    except (typer.Abort, Exception):
+        return False
+
+
+def _system_dry_run_impl(fix_mode: bool = False) -> None:
     console = Console()
     context = ScanContext(
         profile="system",
@@ -238,6 +245,27 @@ def _system_dry_run_impl() -> None:
         report = service.run_with_progress(context, on_task_complete=_mark_done)
 
     render_terminal_report(report, console)
+
+    if fix_mode:
+        fixer = InteractiveAutoFixer(console)
+        report = fixer.apply(report, context)
+        raise typer.Exit(code=report.exit_code)
+
+    has_updates = any(r.severity == Severity.OUTD for r in report.results)
+    has_issues = any(r.severity in {Severity.WARN, Severity.FAIL} for r in report.results)
+
+    if has_updates:
+        console.print()
+        if _safe_confirm("Update everything now?", default=True):
+            upgrade_service = SystemUpgradeService()
+            upgrade_service.run(context, console)
+
+    if has_issues:
+        console.print()
+        if _safe_confirm("Apply fixes for detected issues now?", default=True):
+            fixer = InteractiveAutoFixer(console)
+            report = fixer.apply(report, context)
+
     raise typer.Exit(code=report.exit_code)
 
 
