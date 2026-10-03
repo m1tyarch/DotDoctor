@@ -1,61 +1,277 @@
-from rich.align import Align
+import os
+import textwrap
+import time
+
 from rich.console import Console
 from rich.layout import Layout
-from rich.panel import Panel
+from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
-from dotdoctor.domain.models import CheckResult, ScanReport
+from dotdoctor.cli.theme import (
+    STATUS_FAIL,
+    STATUS_OLD,
+    STATUS_PASS,
+    STATUS_STYLES,
+    STATUS_WARN,
+    STYLE_DEFAULT,
+    STYLE_OLD,
+    STYLE_WARN,
+    format_header,
+)
+from dotdoctor.domain.models import CheckResult, ScanReport, Severity
+
+DEFAULT_ANIMATION_DELAY = 0.025
+DEFAULT_SUMMARY_DELAY = 0.04
 
 
-def _status_style(status: str) -> str:
-    return {
-        "PASS": "green",
-        "OUTD": "blue",
-        "WARN": "yellow",
-        "FAIL": "red",
-    }.get(status, "white")
+def _sleep(seconds: float) -> None:
+    try:
+        time.sleep(seconds)
+    except KeyboardInterrupt:
+        pass
 
 
-def _summary_text(summary: dict[str, int], exit_code: int) -> Text:
-    text = Text("Summary: ")
-    text.append(f"PASS={summary['PASS']}", style="green")
-    text.append(" ")
-    text.append(f"OUTD={summary.get('OUTD', 0)}", style="blue")
-    text.append(" ")
-    text.append(f"WARN={summary['WARN']}", style="yellow")
-    text.append(" ")
-    text.append(f"FAIL={summary['FAIL']}", style="red")
-    text.append(" | ")
-
-    exit_style = "green" if exit_code == 0 else ("yellow" if exit_code == 1 else "red")
-    text.append(f"Exit={exit_code}", style=exit_style)
-    return text
+def _status_label(severity: Severity) -> str:
+    if severity == Severity.OUTD:
+        return STATUS_OLD
+    if severity == Severity.PASS:
+        return STATUS_PASS
+    if severity == Severity.WARN:
+        return STATUS_WARN
+    if severity == Severity.FAIL:
+        return STATUS_FAIL
+    return severity.value
 
 
-def render_terminal_report(report: ScanReport, console: Console) -> None:
-    table = Table(title=f"DotDoctor Scan ({report.profile})")
-    table.add_column("Check ID")
-    table.add_column("Status", style="bold")
-    table.add_column("Message")
-    table.add_column("Remediation")
+def _status_style(severity: Severity) -> str:
+    label = _status_label(severity)
+    return STATUS_STYLES.get(label, STYLE_DEFAULT)
+
+
+def format_summary(
+    summary: dict[str, int],
+    is_final: bool = True,
+    all_passed: bool = False,
+    total_target: int | None = None,
+) -> Text:
+    pass_count = summary.get("PASS", 0)
+    outd_count = summary.get("OUTD", 0)
+    warn_count = summary.get("WARN", 0)
+    fail_count = summary.get("FAIL", 0)
+    total = pass_count + outd_count + warn_count + fail_count
+
+    if all_passed or (is_final and total > 0 and pass_count == total):
+        ref_total = (
+            total_target if total_target is not None else (total if total > 0 else pass_count)
+        )
+        noun = "check" if ref_total == 1 else "checks"
+        return Text(f"All {pass_count} {noun} passed")
+
+    parts: list[tuple[str, str | None]] = []
+    if pass_count > 0:
+        parts.append((f"{pass_count} passed", None))
+    elif not is_final:
+        parts.append(("0 passed", "dim"))
+
+    if outd_count > 0:
+        parts.append((f"{outd_count} outdated", STYLE_OLD))
+    if warn_count > 0:
+        noun = "warning" if warn_count == 1 else "warnings"
+        parts.append((f"{warn_count} {noun}", STYLE_WARN))
+    if fail_count > 0:
+        parts.append((f"{fail_count} failed", "red"))
+
+    if not parts:
+        return Text("0 checks passed")
+
+    summary_text = Text()
+    for i, (txt, style) in enumerate(parts):
+        if i > 0:
+            summary_text.append(" · ")
+        summary_text.append(txt, style=style)
+    return summary_text
+
+
+def _wrap_text(text: str, width: int) -> list[str]:
+    lines: list[str] = []
+    for paragraph in text.splitlines():
+        wrapped = textwrap.wrap(paragraph, width=width)
+        lines.extend(wrapped if wrapped else [""])
+    return lines or [""]
+
+
+def render_terminal_report(
+    report: ScanReport,
+    console: Console,
+    animate: bool | None = None,
+    delay: float = DEFAULT_ANIMATION_DELAY,
+    summary_delay: float = DEFAULT_SUMMARY_DELAY,
+    print_header: bool = True,
+    verbose: bool = False,
+) -> None:
+    if print_header:
+        console.print(format_header(report.profile))
+        console.print()
+
+    if not report.results:
+        console.print(format_summary(report.summary))
+        return
+
+    should_animate = (
+        animate
+        if animate is not None
+        else (
+            console.is_terminal
+            and not console.is_dumb_terminal
+            and not os.environ.get("NO_ANIMATION")
+            and not os.environ.get("DOTDOCTOR_NO_ANIMATION")
+        )
+    )
+
+    max_status_len = max((len(_status_label(r.severity)) for r in report.results), default=4)
+    max_id_len = max((len(r.check_id) for r in report.results), default=0)
+
+    prefix_len = 2 + max_status_len + 2 + max_id_len + 2
+    indent_spaces = " " * prefix_len
+
+    console_width = console.width if console and console.width else 80
+    msg_width = max(15, console_width - prefix_len)
 
     for result in report.results:
-        status_style = f"bold {_status_style(result.severity.value)}"
-        status_text = Text(result.severity.value, style=status_style)
-        remediation_text = (
-            Text(result.remediation, style="cyan") if result.remediation else Text("-")
-        )
-        table.add_row(
-            result.check_id,
-            status_text,
-            result.message,
-            remediation_text,
-        )
+        label = _status_label(result.severity)
+        st_style = _status_style(result.severity)
+        id_str = result.check_id.ljust(max_id_len)
+        msg_style = "dim" if result.severity == Severity.PASS else None
 
-    summary = report.summary
-    console.print(table)
-    console.print(_summary_text(summary, report.exit_code))
+        msg_lines = _wrap_text(result.message, msg_width)
+
+        line1 = Text("  ")
+        line1.append(label.ljust(max_status_len), style=st_style)
+        line1.append("  ")
+        line1.append(id_str)
+        line1.append("  ")
+        line1.append(msg_lines[0], style=msg_style)
+        console.print(line1)
+        if should_animate:
+            _sleep(delay)
+
+        for extra_line in msg_lines[1:]:
+            cont_line = Text(indent_spaces)
+            cont_line.append(extra_line, style=msg_style)
+            console.print(cont_line)
+            if should_animate:
+                _sleep(delay)
+
+        packages = result.details.get("packages") if result.details else None
+        critical = result.details.get("critical") if result.details else None
+        if packages and isinstance(packages, list) and result.severity != Severity.PASS:
+            to_show: list[str] = []
+            if verbose:
+                to_show = packages
+            else:
+                if critical:
+                    for pkg in packages:
+                        p_name = pkg.split()[0].replace("•", "").strip()
+                        if p_name in critical:
+                            to_show.append(pkg)
+                if len(to_show) < 3:
+                    for pkg in packages:
+                        if pkg not in to_show:
+                            to_show.append(pkg)
+                        if len(to_show) >= 3:
+                            break
+
+            for pkg in to_show:
+                pkg_text = f"• {pkg}"
+                for p_line in _wrap_text(pkg_text, msg_width):
+                    pkg_line = Text(indent_spaces)
+                    pkg_line.append(p_line, style="dim")
+                    console.print(pkg_line)
+                    if should_animate:
+                        _sleep(delay)
+
+            if len(packages) > len(to_show) and not verbose:
+                omitted = len(packages) - len(to_show)
+                noun = "package" if omitted == 1 else "packages"
+                omit_line = Text(indent_spaces)
+                omit_line.append(f"• ({omitted} more {noun}, use -v to show all)", style="dim")
+                console.print(omit_line)
+                if should_animate:
+                    _sleep(delay)
+
+        if result.severity != Severity.PASS and result.remediation:
+            fix_text = f"fix: {result.remediation}"
+            fix_lines = _wrap_text(fix_text, msg_width)
+            for fix_line in fix_lines:
+                f_line = Text(indent_spaces)
+                f_line.append(fix_line, style="dim")
+                console.print(f_line)
+                if should_animate:
+                    _sleep(delay)
+
+    console.print()
+    if should_animate:
+        _animate_summary(report.summary, console, delay=summary_delay)
+    else:
+        console.print(format_summary(report.summary))
+
+
+def _animate_summary(
+    summary: dict[str, int],
+    console: Console,
+    delay: float = DEFAULT_SUMMARY_DELAY,
+) -> None:
+    pass_target = summary.get("PASS", 0)
+    outd_target = summary.get("OUTD", 0)
+    warn_target = summary.get("WARN", 0)
+    fail_target = summary.get("FAIL", 0)
+    total_target = pass_target + outd_target + warn_target + fail_target
+
+    if total_target <= 1:
+        console.print(format_summary(summary, is_final=True))
+        return
+
+    all_passed = total_target > 0 and pass_target == total_target
+    steps = min(12, max(6, total_target))
+    initial_summary = {"PASS": 0, "OUTD": 0, "WARN": 0, "FAIL": 0}
+
+    try:
+        with Live(
+            format_summary(
+                initial_summary,
+                is_final=False,
+                all_passed=all_passed,
+                total_target=total_target,
+            ),
+            console=console,
+            transient=False,
+            refresh_per_second=30,
+        ) as live:
+            _sleep(delay)
+            for step in range(1, steps + 1):
+                ratio = step / steps
+                is_final = step == steps
+                if is_final:
+                    interim = summary
+                else:
+                    interim = {
+                        "PASS": int(round(pass_target * ratio)),
+                        "OUTD": int(round(outd_target * ratio)),
+                        "WARN": int(round(warn_target * ratio)),
+                        "FAIL": int(round(fail_target * ratio)),
+                    }
+                live.update(
+                    format_summary(
+                        interim,
+                        is_final=is_final,
+                        all_passed=all_passed,
+                        total_target=total_target,
+                    )
+                )
+                _sleep(delay)
+    except Exception:
+        console.print(format_summary(summary, is_final=True))
 
 
 def build_live_dashboard(
@@ -65,59 +281,38 @@ def build_live_dashboard(
     elapsed_seconds: float,
     active_check_id: str | None,
 ) -> Layout:
-    report = ScanReport(profile=profile, results=results)
-    summary = report.summary
+    header = format_header(f"{profile}  ({elapsed_seconds:.1f}s)")
 
-    header = Text(
-        f"DotDoctor Live Scan  |  profile={profile}  |  elapsed={elapsed_seconds:.1f}s",
-        style="bold cyan",
-    )
-
-    progress_table = Table.grid(expand=True)
-    progress_table.add_column()
-    progress_table.add_column(justify="right")
     completed = len(results)
     ratio = completed / total_checks if total_checks > 0 else 1.0
-    bar_width = 30
+    bar_width = 24
     filled = int(ratio * bar_width)
     progress_bar = "[" + ("#" * filled) + ("-" * (bar_width - filled)) + "]"
-    progress_table.add_row(
-        f"Progress {progress_bar} {completed}/{total_checks}",
-        (
-            f"PASS={summary['PASS']} OUTD={summary.get('OUTD', 0)} "
-            f"WARN={summary['WARN']} FAIL={summary['FAIL']}"
-        ),
-    )
+    progress_text = Text(f"  progress {progress_bar} {completed}/{total_checks}", style="dim")
 
-    state_message = f"Running: {active_check_id}" if active_check_id else "Completed"
-    state_style = "yellow" if active_check_id else "green"
+    body = Table.grid(expand=True)
+    body.add_column()
+    body.add_row(header)
+    body.add_row(Text(""))
+    body.add_row(progress_text)
+    body.add_row(Text(""))
 
-    rows_table = Table(expand=True)
-    rows_table.add_column("Check", style="cyan", no_wrap=True)
-    rows_table.add_column("Status", no_wrap=True)
-    rows_table.add_column("Message")
+    max_status_len = max((len(_status_label(r.severity)) for r in results), default=4)
+    max_id_len = max((len(r.check_id) for r in results), default=0)
+    for result in results[-12:]:
+        label = _status_label(result.severity)
+        st_style = _status_style(result.severity)
+        id_str = result.check_id.ljust(max_id_len)
+        msg_style = "dim" if result.severity == Severity.PASS else None
 
-    for result in results[-10:]:
-        status_style = _status_style(result.severity.value)
-        rows_table.add_row(
-            result.check_id,
-            f"[{status_style}]{result.severity.value}[/{status_style}]",
-            result.message,
-        )
-
-    if not results:
-        rows_table.add_row("-", "-", "Waiting for first check result...")
+        line = Text("  ")
+        line.append(label.ljust(max_status_len), style=st_style)
+        line.append("  ")
+        line.append(id_str)
+        line.append("  ")
+        line.append(result.message, style=msg_style)
+        body.add_row(line)
 
     layout = Layout()
-    layout.split_column(
-        Layout(Panel(Align.left(header), border_style="cyan"), size=3),
-        Layout(Panel(progress_table, title="Scan Status", border_style="blue"), size=5),
-        Layout(
-            Panel(
-                rows_table,
-                title=f"Recent Results ({state_message})",
-                border_style=state_style,
-            )
-        ),
-    )
+    layout.update(body)
     return layout

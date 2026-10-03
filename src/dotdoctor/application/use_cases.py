@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotdoctor.domain.context import ScanContext
 from dotdoctor.domain.models import CheckResult, ScanReport, Severity
@@ -6,19 +7,42 @@ from dotdoctor.domain.ports import EnvironmentCheck
 
 
 class RunScanUseCase:
-    def __init__(self, checks: list[EnvironmentCheck]) -> None:
+    def __init__(
+        self,
+        checks: list[EnvironmentCheck],
+        max_workers: int | None = None,
+    ) -> None:
         self._checks = checks
+        self._max_workers = max_workers or min(32, max(1, len(checks)))
 
     @property
     def total_checks(self) -> int:
         return len(self._checks)
 
+    @property
+    def checks(self) -> list[EnvironmentCheck]:
+        return list(self._checks)
+
     def execute_iter(self, context: ScanContext) -> Iterator[CheckResult]:
-        for check in self._checks:
-            yield self._run_single_check(check, context)
+        if not self._checks:
+            return
+
+        with ThreadPoolExecutor(max_workers=min(self._max_workers, len(self._checks))) as pool:
+            future_to_check = {
+                pool.submit(self._run_single_check, check, context): check for check in self._checks
+            }
+            for future in as_completed(future_to_check):
+                yield future.result()
 
     def execute(self, context: ScanContext) -> ScanReport:
-        results = list(self.execute_iter(context))
+        if not self._checks:
+            return ScanReport(profile=context.profile, results=[])
+
+        with ThreadPoolExecutor(max_workers=min(self._max_workers, len(self._checks))) as pool:
+            futures = [
+                pool.submit(self._run_single_check, check, context) for check in self._checks
+            ]
+            results = [future.result() for future in futures]
 
         return ScanReport(profile=context.profile, results=results)
 

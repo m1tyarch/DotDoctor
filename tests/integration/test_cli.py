@@ -137,27 +137,255 @@ profiles:
     assert "DotDoctor Scan" not in result.stdout
 
 
-def test_root_sys_runs_dry_run_report(monkeypatch) -> None:
-    def fake_run(self, context):
+def test_root_default_runs_dry_run_report(monkeypatch) -> None:
+    def fake_run(self, context, on_task_complete=None):
+        if on_task_complete:
+            on_task_complete("sys.packages")
         return ScanReport(
             profile="system",
             results=[
                 CheckResult(
-                    check_id="sys:packages",
+                    check_id="sys.packages",
                     severity=Severity.OUTD,
                     message="Found 2 updates",
-                    remediation="Run dotdoctor --sysup to apply updates.",
+                    remediation="run dotdoctor --sysup to apply updates",
                 )
             ],
         )
 
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+    monkeypatch.setattr("dotdoctor.application.system_update.SystemDryRunService.run", fake_run)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "DotDoctor · system" in result.stdout
+    assert "sys.packages" in result.stdout
+
+
+def test_root_sys_runs_dry_run_report(monkeypatch) -> None:
+    def fake_run(self, context, on_task_complete=None):
+        if on_task_complete:
+            on_task_complete("sys.packages")
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.OUTD,
+                    message="Found 2 updates",
+                    remediation="run dotdoctor --sysup to apply updates",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
     monkeypatch.setattr("dotdoctor.application.system_update.SystemDryRunService.run", fake_run)
 
     result = runner.invoke(app, ["--sys"])
 
     assert result.exit_code == 0
-    assert "DotDoctor Scan (system)" in result.stdout
-    assert "sys:packages" in result.stdout
+    assert "DotDoctor · system" in result.stdout
+    assert "sys.packages" in result.stdout
+
+
+def test_root_env_runs_scan(monkeypatch) -> None:
+    called = []
+
+    def fake_scan(profile, config, disable_check, json_output, ui, fix):
+        called.append((profile, ui, fix))
+        import typer
+
+        raise typer.Exit(code=0)
+
+    monkeypatch.setattr("dotdoctor.cli.app._scan_impl", fake_scan)
+
+    result = runner.invoke(app, ["--env"])
+    assert result.exit_code == 0
+    assert called == [("python-dev", True, False)]
+
+    result_fix = runner.invoke(app, ["--env", "--fix"])
+    assert result_fix.exit_code == 0
+    assert called == [("python-dev", True, False), ("python-dev", True, True)]
+
+
+def test_root_conflicting_options() -> None:
+    result = runner.invoke(app, ["--env", "--sys"])
+    assert result.exit_code != 0
+    assert "Use either --env, --sys, or --sysup, not combined." in result.output
+
+    result = runner.invoke(app, ["--env", "--sysup"])
+    assert result.exit_code != 0
+    assert "Use either --env, --sys, or --sysup, not combined." in result.output
+
+    result = runner.invoke(app, ["--sys", "--sysup"])
+    assert result.exit_code != 0
+    assert "Use either --sys or --sysup, not both." in result.output
+
+    result = runner.invoke(app, ["--fix", "--sysup"])
+    assert result.exit_code != 0
+    assert "Use either --fix or --sysup, not both." in result.output
+
+
+def test_root_fix_runs_system_auto_fix(monkeypatch) -> None:
+    called_fix = []
+
+    def fake_run(self, context, on_task_complete=None):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.orphans",
+                    severity=Severity.WARN,
+                    message="2 orphan packages found",
+                    details={"orphans": ["pkg1", "pkg2"]},
+                )
+            ],
+        )
+
+    def fake_apply(self, report, context):
+        called_fix.append(report)
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.orphans",
+                    severity=Severity.PASS,
+                    message="Auto-fixed: Removed 2 orphan packages.",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+    monkeypatch.setattr("dotdoctor.application.auto_fix.InteractiveAutoFixer.apply", fake_apply)
+
+    result = runner.invoke(app, ["--fix"])
+
+    assert result.exit_code == 0
+    assert len(called_fix) == 1
+    assert "sys.orphans" in result.stdout
+
+
+def test_root_prompts_update_everything_when_outd(monkeypatch) -> None:
+    upgraded = []
+
+    def fake_run(self, context, on_task_complete=None):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.OUTD,
+                    message="3 updates available",
+                )
+            ],
+        )
+
+    def fake_upgrade(self, context, console):
+        upgraded.append(True)
+        console.print("Upgrade completed successfully.")
+        return 0
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemUpgradeService.run", fake_upgrade
+    )
+
+    result = runner.invoke(app, [], input="y\n")
+
+    assert result.exit_code == 0
+    assert upgraded == [True]
+    assert "Update everything now?" in result.stdout
+    assert "Upgrade completed successfully." in result.stdout
+
+
+def test_root_prompts_fixes_when_issues_detected(monkeypatch) -> None:
+    fixed = []
+
+    def fake_run(self, context, on_task_complete=None):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.cache",
+                    severity=Severity.WARN,
+                    message="5.0 GiB in pacman cache",
+                )
+            ],
+        )
+
+    def fake_apply(self, report, context):
+        fixed.append(True)
+        return report
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+    monkeypatch.setattr("dotdoctor.application.auto_fix.InteractiveAutoFixer.apply", fake_apply)
+
+    result = runner.invoke(app, [], input="y\n")
+
+    assert result.exit_code == 0
+    assert fixed == [True]
+    assert "Apply fixes for detected issues now?" in result.stdout
+
+
+def test_root_chains_updates_and_fixes(monkeypatch) -> None:
+    actions = []
+
+    def fake_run(self, context, on_task_complete=None):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.OUTD,
+                    message="2 updates available",
+                ),
+                CheckResult(
+                    check_id="sys.orphans",
+                    severity=Severity.WARN,
+                    message="1 orphan package found",
+                ),
+            ],
+        )
+
+    def fake_upgrade(self, context, console):
+        actions.append("upgrade")
+        return 0
+
+    def fake_apply(self, report, context):
+        actions.append("fix")
+        return report
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemUpgradeService.run", fake_upgrade
+    )
+    monkeypatch.setattr("dotdoctor.application.auto_fix.InteractiveAutoFixer.apply", fake_apply)
+
+    result = runner.invoke(app, [], input="y\ny\n")
+
+    assert result.exit_code == 0
+    assert actions == ["upgrade", "fix"]
+    assert "Update everything now?" in result.stdout
+    assert "Apply fixes for detected issues now?" in result.stdout
 
 
 def test_root_sysup_runs_upgrade(monkeypatch) -> None:
@@ -171,3 +399,102 @@ def test_root_sysup_runs_upgrade(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "System updater stub" in result.stdout
+
+
+def test_cli_typo_option_single_line_stderr() -> None:
+    result = runner.invoke(app, ["--dev"])
+    assert result.exit_code == 2
+    assert result.output == "error: unknown option --dev. Did you mean --env?\n"
+    assert "Usage:" not in result.output
+    assert "Error" not in result.output
+
+
+def test_cli_unknown_option_no_suggestion_single_line_stderr() -> None:
+    result = runner.invoke(app, ["--completely-unrelated-unknown-option"])
+    assert result.exit_code == 2
+    assert result.output == (
+        "error: unknown option --completely-unrelated-unknown-option. "
+        "Run 'dotdoctor --help' for usage.\n"
+    )
+    assert "Usage:" not in result.output
+
+
+def test_cli_disable_check_legacy_id_alias(tmp_path: Path) -> None:
+    config = tmp_path / "dotdoctor.yml"
+    config.write_text(
+        """
+profiles:
+  python-dev:
+    enabled_checks:
+      - path.integrity
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        ["scan", "--config", str(config), "--disable-check", "path:integrity"],
+        env={"PATH": "/usr/bin"},
+    )
+    assert result.exit_code == 0
+    assert "path.integrity" not in result.stdout
+
+
+def test_root_critical_update_warning(monkeypatch) -> None:
+    def fake_run(self, context):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.OUTD,
+                    message="1 update available (reboot required: linux)",
+                    details={"critical": ["linux"], "packages": ["linux 6.10.1 -> 6.10.2"]},
+                )
+            ],
+            summary={"PASS": 0, "OUTD": 1, "WARN": 0, "FAIL": 0},
+        )
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+
+    result = runner.invoke(app, [], input="n\n")
+    assert result.exit_code == 0
+    assert "Note: Critical updates detected (linux) — reboot will be recommended." in result.stdout
+    assert "Update everything now?" in result.stdout
+
+
+def test_root_verbose_shows_all_packages(monkeypatch) -> None:
+    pkgs = [f"pkg{i} 1.0 -> 1.1" for i in range(5)]
+
+    def fake_run(self, context):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.OUTD,
+                    message="5 updates available",
+                    details={"packages": pkgs},
+                )
+            ],
+            summary={"PASS": 0, "OUTD": 1, "WARN": 0, "FAIL": 0},
+        )
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+
+    # Without verbose: truncated
+    result_normal = runner.invoke(app, [], input="n\n")
+    assert result_normal.exit_code == 0
+    assert "• (2 more packages, use -v to show all)" in result_normal.stdout
+
+    # With verbose (-v): shows all
+    result_verbose = runner.invoke(app, ["-v"], input="n\n")
+    assert result_verbose.exit_code == 0
+    assert "• pkg4 1.0 -> 1.1" in result_verbose.stdout
+    assert "use -v to show all" not in result_verbose.stdout

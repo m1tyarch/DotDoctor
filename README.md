@@ -9,17 +9,17 @@ DotDoctor is a Linux CLI utility for diagnosing development environment issues a
 Key Features
 ------------
 
-- Development environment checks (binary availability, version checks, PATH integrity, shell config sanity, directory permissions)
+- System dry-run update & hygiene audit by default (`dotdoctor` or `--sys`) for Arch/AUR packages, Flatpaks, firmware, Oh-My-Zsh, orphan packages, pacman cache, .pacnew files, and failed systemd units
+- Development environment checks (`--env` or `scan`) (binary availability, version checks, PATH integrity, shell config sanity, directory permissions)
 - Live terminal dashboard and plain report mode
-- Optional interactive auto-fix flow for actionable findings
-- System dry-run update audit (`--sys`) for Arch packages, AUR, Flatpak, firmware, and Oh-My-Zsh
-- System upgrade flow (`--sysup`) with strict failure handling
+- Optional interactive auto-fix flow for actionable findings (`--fix`)
+- System upgrade flow (`--sysup`) with strict failure handling, mirror recovery, Flatpak runtime cleanup, and pacman cache pruning
 
 System Update Safety Model
 --------------------------
 
-- AUR parsing recognizes flagged packages, including out-of-date markers from AUR helper output
-- Exit codes from update commands are handled strictly (`pacman`/`yay`, `flatpak`, `fwupdmgr`)
+- AUR parsing recognizes flagged packages, including out-of-date markers from `yay` or `paru`
+- Exit codes from update commands are handled strictly (`pacman`/`yay`/`paru`, `flatpak`, `fwupdmgr`)
 - Fatal network and mirror failures are treated as hard failures
 - Mirror fallback is attempted when package sync fails with mirror/network symptoms
 - Fatal update failures terminate with exit code `1`
@@ -31,7 +31,8 @@ Requirements
 - Linux environment
 - Optional system tools for extended checks and updates:
 	- `checkupdates`
-	- `yay`
+	- `paru` or `yay`
+	- `pacman-contrib` (`paccache`, `pacdiff`)
 	- `flatpak`
 	- `fwupdmgr`
 	- `cachyos-rate-mirrors` or `reflector`
@@ -56,10 +57,22 @@ pip install -e .[dev]
 Usage
 -----
 
-Run default scan:
+Run default system dry-run update checks:
 
 ```bash
 dotdoctor
+```
+
+Run development environment scan:
+
+```bash
+dotdoctor --env
+```
+
+Run development environment scan with auto-fix:
+
+```bash
+dotdoctor --env --fix
 ```
 
 Run profile explicitly:
@@ -78,12 +91,6 @@ Export JSON report:
 
 ```bash
 dotdoctor scan --json-output artifacts/report.json
-```
-
-Run system dry-run checks:
-
-```bash
-dotdoctor --sys
 ```
 
 Run system upgrades:
