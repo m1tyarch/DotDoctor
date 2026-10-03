@@ -67,8 +67,13 @@ class InteractiveAutoFixer:
                 )
                 continue
 
+            action_label = self._resolve_action_label(result.check_id)
             try:
-                outcome = fix_handler(context, result)
+                if result.check_id == "sys.pacnew" or not self._console.is_terminal:
+                    outcome = fix_handler(context, result)
+                else:
+                    with self._console.status(f"[dim]{action_label}[/dim]", spinner="dots"):
+                        outcome = fix_handler(context, result)
             except (OSError, subprocess.SubprocessError) as exc:
                 self._console.print(f"[red]Auto-fix failed:[/red] {exc}")
                 continue
@@ -115,6 +120,20 @@ class InteractiveAutoFixer:
             "sys.disk": self._fix_sys_disk,
         }
         return handlers.get(check_id)
+
+    def _resolve_action_label(self, check_id: str) -> str:
+        labels: dict[str, str] = {
+            "path.integrity": "Cleaning PATH entries in shell configuration...",
+            "sys.orphans": "Removing orphan packages...",
+            "sys.cache": "Cleaning pacman package cache...",
+            "sys.flatpak-unused": "Removing unused Flatpak runtimes...",
+            "sys.pacnew": "Reviewing .pacnew files with pacdiff...",
+            "sys.journal": "Vacuuming systemd journal logs to 1G...",
+            "sys.reboot": "Initiating system reboot...",
+            "sys.services": "Resetting failed systemd services...",
+            "sys.disk": "Cleaning package cache and journal logs...",
+        }
+        return labels.get(check_id, f"Remediating {check_id}...")
 
     def _preview_path_integrity_diff(self, context: ScanContext) -> None:
         raw_entries = context.path_value.split(":") if context.path_value else []

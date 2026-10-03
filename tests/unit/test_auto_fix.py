@@ -328,3 +328,65 @@ def test_interactive_auto_fixer_apply_skips_outd_and_prompts_warn(
     # Check defaults: orphans default was True, reboot default was False
     assert prompts[0][1] is True
     assert prompts[1][1] is False
+
+
+def test_resolve_action_label() -> None:
+    fixer = InteractiveAutoFixer(Console())
+    assert "orphan" in fixer._resolve_action_label("sys.orphans").lower()
+    assert "cache" in fixer._resolve_action_label("sys.cache").lower()
+    assert "flatpak" in fixer._resolve_action_label("sys.flatpak-unused").lower()
+    assert "pacdiff" in fixer._resolve_action_label("sys.pacnew").lower()
+    assert "journal" in fixer._resolve_action_label("sys.journal").lower()
+    assert "reboot" in fixer._resolve_action_label("sys.reboot").lower()
+    assert "services" in fixer._resolve_action_label("sys.services").lower()
+    assert "cache" in fixer._resolve_action_label("sys.disk").lower()
+    assert "unknown" in fixer._resolve_action_label("unknown")
+
+
+def test_apply_uses_status_spinner_when_terminal(monkeypatch, tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    console = Console()
+    monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
+    fixer = InteractiveAutoFixer(console)
+
+    status_called = []
+
+    class DummyStatus:
+        def __init__(self, message: str) -> None:
+            self.message = message
+
+        def __enter__(self):
+            status_called.append(self.message)
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    monkeypatch.setattr(console, "status", lambda msg, spinner="dots": DummyStatus(msg))
+    monkeypatch.setattr(
+        "dotdoctor.application.auto_fix.typer.confirm",
+        lambda prompt, default=True: True,
+    )
+    monkeypatch.setattr(
+        fixer,
+        "_fix_sys_orphans",
+        lambda ctx, res: FixOutcome(changed=True, note="Removed 1 package."),
+    )
+
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(
+                check_id="sys.orphans",
+                severity=Severity.WARN,
+                message="orphan found",
+            )
+        ],
+    )
+
+    new_report = fixer.apply(report, context)
+    assert len(status_called) == 1
+    assert "Removing orphan packages" in status_called[0]
+    res = new_report.get_result("sys.orphans")
+    assert res is not None
+    assert res.severity is Severity.PASS

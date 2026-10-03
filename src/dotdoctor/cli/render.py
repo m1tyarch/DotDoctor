@@ -4,6 +4,7 @@ import time
 
 from rich.console import Console
 from rich.layout import Layout
+from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
@@ -37,14 +38,14 @@ def _status_style(severity: Severity) -> str:
     return "default"
 
 
-def format_summary(summary: dict[str, int]) -> Text:
+def format_summary(summary: dict[str, int], is_final: bool = True) -> Text:
     pass_count = summary.get("PASS", 0)
     outd_count = summary.get("OUTD", 0)
     warn_count = summary.get("WARN", 0)
     fail_count = summary.get("FAIL", 0)
     total = pass_count + outd_count + warn_count + fail_count
 
-    if total > 0 and pass_count == total:
+    if is_final and total > 0 and pass_count == total:
         noun = "check" if total == 1 else "checks"
         return Text(f"All {total} {noun} passed")
 
@@ -150,8 +151,57 @@ def render_terminal_report(
 
     console.print()
     if should_animate:
-        _sleep(delay)
-    console.print(format_summary(report.summary))
+        _animate_summary(report.summary, console, delay=delay)
+    else:
+        console.print(format_summary(report.summary))
+
+
+def _animate_summary(
+    summary: dict[str, int],
+    console: Console,
+    delay: float = DEFAULT_ANIMATION_DELAY,
+) -> None:
+    pass_target = summary.get("PASS", 0)
+    outd_target = summary.get("OUTD", 0)
+    warn_target = summary.get("WARN", 0)
+    fail_target = summary.get("FAIL", 0)
+    total_target = pass_target + outd_target + warn_target + fail_target
+
+    if total_target <= 1:
+        console.print(format_summary(summary, is_final=True))
+        return
+
+    steps = min(5, total_target)
+    initial_summary = {
+        "PASS": min(1, pass_target),
+        "OUTD": 0,
+        "WARN": 0,
+        "FAIL": 0,
+    }
+
+    try:
+        with Live(
+            format_summary(initial_summary, is_final=False),
+            console=console,
+            transient=False,
+            refresh_per_second=30,
+        ) as live:
+            for step in range(1, steps + 1):
+                ratio = step / steps
+                is_final = step == steps
+                if is_final:
+                    interim = summary
+                else:
+                    interim = {
+                        "PASS": int(pass_target * ratio),
+                        "OUTD": int(outd_target * ratio),
+                        "WARN": int(warn_target * ratio),
+                        "FAIL": int(fail_target * ratio),
+                    }
+                live.update(format_summary(interim, is_final=is_final))
+                _sleep(delay)
+    except Exception:
+        console.print(format_summary(summary, is_final=True))
 
 
 def build_live_dashboard(

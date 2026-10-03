@@ -313,7 +313,8 @@ def test_render_terminal_report_animation_enabled(monkeypatch) -> None:
 
     render_terminal_report(report, console, animate=True, delay=0.01)
 
-    assert len(sleeps) == 4
+    # 3 sleeps for item lines + 2 sleeps for rolling summary count-up
+    assert len(sleeps) == 5
     assert all(s == 0.01 for s in sleeps)
 
 
