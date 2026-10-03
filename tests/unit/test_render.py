@@ -36,6 +36,23 @@ def test_summary_all_passed() -> None:
     text_1 = format_summary({"PASS": 1, "OUTD": 0, "WARN": 0, "FAIL": 0})
     assert text_1.plain == "All 1 check passed"
 
+    # Interim rolling states with all_passed=True show 'All' prefix immediately
+    text_rolling_0 = format_summary(
+        {"PASS": 0, "OUTD": 0, "WARN": 0, "FAIL": 0},
+        is_final=False,
+        all_passed=True,
+        total_target=10,
+    )
+    assert text_rolling_0.plain == "All 0 checks passed"
+
+    text_rolling_5 = format_summary(
+        {"PASS": 5, "OUTD": 0, "WARN": 0, "FAIL": 0},
+        is_final=False,
+        all_passed=True,
+        total_target=10,
+    )
+    assert text_rolling_5.plain == "All 5 checks passed"
+
 
 def test_summary_mixed_nonzero_only() -> None:
     text = format_summary({"PASS": 9, "OUTD": 0, "WARN": 1, "FAIL": 1})
@@ -358,3 +375,39 @@ def test_render_terminal_report_animation_disabled_by_env(monkeypatch) -> None:
 
     render_terminal_report(report, console)
     assert len(sleeps) == 0
+
+
+def test_render_terminal_report_animation_all_passed(monkeypatch) -> None:
+    from rich.live import Live
+
+    output = io.StringIO()
+    console = Console(file=output, width=80, color_system=None)
+
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(check_id="sys.packages", severity=Severity.PASS, message="ok"),
+            CheckResult(check_id="sys.disk", severity=Severity.PASS, message="ok"),
+        ],
+        summary={"PASS": 2, "OUTD": 0, "WARN": 0, "FAIL": 0},
+    )
+
+    updates: list[str] = []
+    original_live_update = Live.update
+
+    def intercept_update(self, renderable):
+        if hasattr(renderable, "plain"):
+            updates.append(renderable.plain)
+        return original_live_update(self, renderable)
+
+    monkeypatch.setattr(Live, "update", intercept_update)
+    monkeypatch.setattr("dotdoctor.cli.render._sleep", lambda sec: None)
+
+    render_terminal_report(report, console, animate=True, delay=0.01, summary_delay=0.02)
+
+    # Every update frame should start with "All " and end with "checks passed"
+    assert len(updates) > 0
+    for u in updates:
+        assert u.startswith("All ")
+        assert u.endswith("checks passed")
+    assert updates[-1] == "All 2 checks passed"

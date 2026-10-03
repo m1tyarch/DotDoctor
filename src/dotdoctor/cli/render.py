@@ -11,7 +11,7 @@ from rich.text import Text
 from dotdoctor.domain.models import CheckResult, ScanReport, Severity
 
 DEFAULT_ANIMATION_DELAY = 0.025
-DEFAULT_SUMMARY_DELAY = 0.065
+DEFAULT_SUMMARY_DELAY = 0.04
 
 
 def _sleep(seconds: float) -> None:
@@ -39,16 +39,24 @@ def _status_style(severity: Severity) -> str:
     return "default"
 
 
-def format_summary(summary: dict[str, int], is_final: bool = True) -> Text:
+def format_summary(
+    summary: dict[str, int],
+    is_final: bool = True,
+    all_passed: bool = False,
+    total_target: int | None = None,
+) -> Text:
     pass_count = summary.get("PASS", 0)
     outd_count = summary.get("OUTD", 0)
     warn_count = summary.get("WARN", 0)
     fail_count = summary.get("FAIL", 0)
     total = pass_count + outd_count + warn_count + fail_count
 
-    if is_final and total > 0 and pass_count == total:
-        noun = "check" if total == 1 else "checks"
-        return Text(f"All {total} {noun} passed")
+    if all_passed or (is_final and total > 0 and pass_count == total):
+        ref_total = (
+            total_target if total_target is not None else (total if total > 0 else pass_count)
+        )
+        noun = "check" if ref_total == 1 else "checks"
+        return Text(f"All {pass_count} {noun} passed")
 
     parts: list[tuple[str, str | None]] = []
     if pass_count > 0:
@@ -70,7 +78,7 @@ def format_summary(summary: dict[str, int], is_final: bool = True) -> Text:
     summary_text = Text()
     for i, (txt, style) in enumerate(parts):
         if i > 0:
-            summary_text.append(" \u00b7 ")
+            summary_text.append(" · ")
         summary_text.append(txt, style=style)
     return summary_text
 
@@ -176,12 +184,18 @@ def _animate_summary(
         console.print(format_summary(summary, is_final=True))
         return
 
+    all_passed = total_target > 0 and pass_target == total_target
     steps = min(12, max(6, total_target))
     initial_summary = {"PASS": 0, "OUTD": 0, "WARN": 0, "FAIL": 0}
 
     try:
         with Live(
-            format_summary(initial_summary, is_final=False),
+            format_summary(
+                initial_summary,
+                is_final=False,
+                all_passed=all_passed,
+                total_target=total_target,
+            ),
             console=console,
             transient=False,
             refresh_per_second=30,
@@ -199,7 +213,14 @@ def _animate_summary(
                         "WARN": int(round(warn_target * ratio)),
                         "FAIL": int(round(fail_target * ratio)),
                     }
-                live.update(format_summary(interim, is_final=is_final))
+                live.update(
+                    format_summary(
+                        interim,
+                        is_final=is_final,
+                        all_passed=all_passed,
+                        total_target=total_target,
+                    )
+                )
                 _sleep(delay)
     except Exception:
         console.print(format_summary(summary, is_final=True))
