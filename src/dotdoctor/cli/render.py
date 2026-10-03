@@ -108,6 +108,7 @@ def render_terminal_report(
     delay: float = DEFAULT_ANIMATION_DELAY,
     summary_delay: float = DEFAULT_SUMMARY_DELAY,
     print_header: bool = True,
+    verbose: bool = False,
 ) -> None:
     if print_header:
         console.print(format_header(report.profile))
@@ -161,6 +162,43 @@ def render_terminal_report(
             console.print(cont_line)
             if should_animate:
                 _sleep(delay)
+
+        packages = result.details.get("packages") if result.details else None
+        critical = result.details.get("critical") if result.details else None
+        if packages and isinstance(packages, list) and result.severity != Severity.PASS:
+            to_show: list[str] = []
+            if verbose:
+                to_show = packages
+            else:
+                if critical:
+                    for pkg in packages:
+                        p_name = pkg.split()[0].replace("•", "").strip()
+                        if p_name in critical:
+                            to_show.append(pkg)
+                if len(to_show) < 3:
+                    for pkg in packages:
+                        if pkg not in to_show:
+                            to_show.append(pkg)
+                        if len(to_show) >= 3:
+                            break
+
+            for pkg in to_show:
+                pkg_text = f"• {pkg}"
+                for p_line in _wrap_text(pkg_text, msg_width):
+                    pkg_line = Text(indent_spaces)
+                    pkg_line.append(p_line, style="dim")
+                    console.print(pkg_line)
+                    if should_animate:
+                        _sleep(delay)
+
+            if len(packages) > len(to_show) and not verbose:
+                omitted = len(packages) - len(to_show)
+                noun = "package" if omitted == 1 else "packages"
+                omit_line = Text(indent_spaces)
+                omit_line.append(f"• ({omitted} more {noun}, use -v to show all)", style="dim")
+                console.print(omit_line)
+                if should_animate:
+                    _sleep(delay)
 
         if result.severity != Severity.PASS and result.remediation:
             fix_text = f"fix: {result.remediation}"

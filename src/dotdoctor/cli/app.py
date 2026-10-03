@@ -99,6 +99,12 @@ SYSUP_OPTION = typer.Option(
     "--sysup",
     help="Run sequential real system update commands.",
 )
+VERBOSE_OPTION = typer.Option(
+    False,
+    "--verbose",
+    "-v",
+    help="Show detailed findings and package version lists.",
+)
 
 
 @app.callback(invoke_without_command=True)
@@ -108,6 +114,7 @@ def root(
     fix: bool = FIX_OPTION,
     sys: bool = SYS_OPTION,
     sysup: bool = SYSUP_OPTION,
+    verbose: bool = VERBOSE_OPTION,
 ) -> None:
     if ctx.invoked_subcommand is None:
         if env and (sys or sysup):
@@ -118,21 +125,32 @@ def root(
             raise typer.BadParameter("Use either --fix or --sysup, not both.")
 
         if env:
-            _scan_impl(
-                profile="python-dev",
-                config=None,
-                disable_check=[],
-                json_output=None,
-                ui=True,
-                fix=fix,
-            )
+            if verbose:
+                _scan_impl(
+                    profile="python-dev",
+                    config=None,
+                    disable_check=[],
+                    json_output=None,
+                    ui=True,
+                    fix=fix,
+                    verbose=verbose,
+                )
+            else:
+                _scan_impl(
+                    profile="python-dev",
+                    config=None,
+                    disable_check=[],
+                    json_output=None,
+                    ui=True,
+                    fix=fix,
+                )
             return
 
         if sysup:
             _system_upgrade_impl()
             return
 
-        _system_dry_run_impl(fix_mode=fix)
+        _system_dry_run_impl(fix_mode=fix, verbose=verbose)
 
 
 @app.command("version")
@@ -150,8 +168,9 @@ def scan(
     json_output: Path | None = JSON_OUTPUT_OPTION,
     ui: bool = UI_OPTION,
     fix: bool = FIX_OPTION,
+    verbose: bool = VERBOSE_OPTION,
 ) -> None:
-    _scan_impl(profile, config, disable_check, json_output, ui, fix)
+    _scan_impl(profile, config, disable_check, json_output, ui, fix, verbose)
 
 
 def _scan_impl(
@@ -161,6 +180,7 @@ def _scan_impl(
     json_output: Path | None,
     ui: bool,
     fix: bool,
+    verbose: bool = False,
 ) -> None:
     console = Console()
 
@@ -183,7 +203,7 @@ def _scan_impl(
         if fix:
             report = use_case.execute(context)
         else:
-            report = _run_scan(use_case, context, console, ui=ui)
+            report = _run_scan(use_case, context, console, ui=ui, verbose=verbose)
 
         if fix:
             fixer = InteractiveAutoFixer(console)
@@ -212,7 +232,7 @@ def _safe_confirm(prompt: str, default: bool = True) -> bool:
         return False
 
 
-def _system_dry_run_impl(fix_mode: bool = False) -> None:
+def _system_dry_run_impl(fix_mode: bool = False, verbose: bool = False) -> None:
     console = Console()
     context = ScanContext(
         profile="system",
@@ -268,7 +288,7 @@ def _system_dry_run_impl(fix_mode: bool = False) -> None:
     else:
         report = service.run_with_progress(context)
 
-    render_terminal_report(report, console, print_header=False)
+    render_terminal_report(report, console, print_header=False, verbose=verbose)
 
     if fix_mode:
         fixer = InteractiveAutoFixer(console)
@@ -279,6 +299,16 @@ def _system_dry_run_impl(fix_mode: bool = False) -> None:
     has_issues = any(r.severity in {Severity.WARN, Severity.FAIL} for r in report.results)
 
     if has_updates:
+        crit_names: list[str] = []
+        for item in report.results:
+            if item.severity is Severity.OUTD and item.details and item.details.get("critical"):
+                crit_names.extend(item.details["critical"])
+        if crit_names:
+            crit_str = ", ".join(sorted(set(crit_names)))
+            console.print(
+                f"\n  [yellow]Note: Critical updates detected ({crit_str}) — "
+                "reboot will be recommended.[/yellow]"
+            )
         console.print()
         if _safe_confirm("Update everything now?", default=True):
             console.print()
@@ -316,10 +346,11 @@ def _run_scan(
     context: ScanContext,
     console: Console,
     ui: bool,
+    verbose: bool = False,
 ) -> ScanReport:
     if not ui:
         report = use_case.execute(context)
-        render_terminal_report(report, console)
+        render_terminal_report(report, console, verbose=verbose)
         return report
 
     results: list[CheckResult] = []

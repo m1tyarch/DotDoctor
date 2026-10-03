@@ -438,3 +438,63 @@ profiles:
     )
     assert result.exit_code == 0
     assert "path.integrity" not in result.stdout
+
+
+def test_root_critical_update_warning(monkeypatch) -> None:
+    def fake_run(self, context):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.OUTD,
+                    message="1 update available (reboot required: linux)",
+                    details={"critical": ["linux"], "packages": ["linux 6.10.1 -> 6.10.2"]},
+                )
+            ],
+            summary={"PASS": 0, "OUTD": 1, "WARN": 0, "FAIL": 0},
+        )
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+
+    result = runner.invoke(app, [], input="n\n")
+    assert result.exit_code == 0
+    assert "Note: Critical updates detected (linux) — reboot will be recommended." in result.stdout
+    assert "Update everything now?" in result.stdout
+
+
+def test_root_verbose_shows_all_packages(monkeypatch) -> None:
+    pkgs = [f"pkg{i} 1.0 -> 1.1" for i in range(5)]
+
+    def fake_run(self, context):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.OUTD,
+                    message="5 updates available",
+                    details={"packages": pkgs},
+                )
+            ],
+            summary={"PASS": 0, "OUTD": 1, "WARN": 0, "FAIL": 0},
+        )
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+
+    # Without verbose: truncated
+    result_normal = runner.invoke(app, [], input="n\n")
+    assert result_normal.exit_code == 0
+    assert "• (2 more packages, use -v to show all)" in result_normal.stdout
+
+    # With verbose (-v): shows all
+    result_verbose = runner.invoke(app, ["-v"], input="n\n")
+    assert result_verbose.exit_code == 0
+    assert "• pkg4 1.0 -> 1.1" in result_verbose.stdout
+    assert "use -v to show all" not in result_verbose.stdout

@@ -941,7 +941,7 @@ def test_system_upgrade_console_layout_and_no_ansi_no_color(
     assert "  SKIP  Oh-My-Zsh update (not installed)" in rendered
     assert "  DONE  Firmware update" in rendered
     # Final summary in scan format
-    assert "6 done · 2 skipped" in rendered
+    assert "6 done · 3 skipped" in rendered
     assert "Nothing to update. All packages and components are up to date." in rendered
 
 
@@ -1010,7 +1010,7 @@ def test_system_upgrade_with_actual_updates_applied(
     assert code == 0
 
     rendered = output.getvalue()
-    assert "1 done · 4 skipped" in rendered
+    assert "1 done · 5 skipped" in rendered
     assert "All updates completed successfully." in rendered
     assert "Nothing to update" not in rendered
 
@@ -1071,3 +1071,214 @@ def test_detect_step_updates_variants() -> None:
     assert _detect_step_updates(
         ["fwupdmgr", "update", "-y"], "Updating Device A...\nSuccessfully installed\n", ""
     )
+
+
+def test_parse_package_update_line() -> None:
+    from dotdoctor.application.system_update import parse_package_update_line
+
+    assert parse_package_update_line("linux 6.10.1-arch1-1 -> 6.10.2-arch1-1") == (
+        "linux",
+        "6.10.1-arch1-1",
+        "6.10.2-arch1-1",
+    )
+    assert parse_package_update_line("nvidia 555.58.02-1 → 560.35.03-1") == (
+        "nvidia",
+        "555.58.02-1",
+        "560.35.03-1",
+    )
+    assert parse_package_update_line("mesa 24.1.2-1 24.1.3-1") == (
+        "mesa",
+        "24.1.2-1",
+        "24.1.3-1",
+    )
+    assert parse_package_update_line("invalid") is None
+    assert parse_package_update_line("") is None
+
+
+def test_detect_snapshot_tool_selection(monkeypatch) -> None:
+    from dotdoctor.application.system_update import detect_snapshot_tool
+
+    # 1. snapper available with valid configs
+    def fake_which_snapper(name: str) -> str | None:
+        if name in {"snapper", "timeshift"}:
+            return f"/usr/bin/{name}"
+        return None
+
+    def fake_run_snapper_ok(*args, **kwargs):
+        return SimpleNamespace(returncode=0, stdout="Config | Subvolume\nroot   | /@\n", stderr="")
+
+    monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", fake_which_snapper)
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run_snapper_ok)
+    assert detect_snapshot_tool() == "snapper"
+
+    # 2. snapper has no configs -> fallback to timeshift
+    def fake_run_snapper_no_configs(*args, **kwargs):
+        return SimpleNamespace(returncode=0, stdout="Config | Subvolume\n", stderr="")
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.subprocess.run",
+        fake_run_snapper_no_configs,
+    )
+    assert detect_snapshot_tool() == "timeshift"
+
+    # 3. Only timeshift available
+    def fake_which_timeshift_only(name: str) -> str | None:
+        if name == "timeshift":
+            return "/usr/bin/timeshift"
+        return None
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.shutil.which",
+        fake_which_timeshift_only,
+    )
+    assert detect_snapshot_tool() == "timeshift"
+
+    # 4. Neither available
+    monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", lambda _: None)
+    assert detect_snapshot_tool() is None
+
+
+def test_system_upgrade_with_snapper_rollback_advice(monkeypatch, tmp_path: Path) -> None:
+    service = SystemUpgradeService(snapshot_tool_fn=lambda: "snapper")
+    output = io.StringIO()
+    console = Console(file=output, width=80, no_color=True)
+
+    def fake_which(name: str) -> str | None:
+        if name in {"yay", "snapper"}:
+            return f"/usr/bin/{name}"
+        return None
+
+    def fake_run(*args, **kwargs):
+        cmd = args[0]
+        if cmd == ["sudo", "true"]:
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+        if cmd[:3] == ["sudo", "snapper", "create"]:
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+        if cmd[:1] == ["yay"]:
+            return SimpleNamespace(returncode=1, stderr="fatal error", stdout="")
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", fake_which)
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run)
+
+    code = service.run(_context(tmp_path), console)
+    assert code == 2
+
+    rendered = output.getvalue()
+    assert "DONE  Pre-update snapshot (snapper)" in rendered
+    assert "FAIL  System and AUR update (yay)" in rendered
+    assert "Rollback available: sudo snapper rollback or select snapshot in bootloader" in rendered
+
+
+def test_system_upgrade_with_timeshift_rollback_advice(monkeypatch, tmp_path: Path) -> None:
+    service = SystemUpgradeService(snapshot_tool_fn=lambda: "timeshift")
+    output = io.StringIO()
+    console = Console(file=output, width=80, no_color=True)
+
+    def fake_which(name: str) -> str | None:
+        if name in {"yay", "timeshift"}:
+            return f"/usr/bin/{name}"
+        return None
+
+    def fake_run(*args, **kwargs):
+        cmd = args[0]
+        if cmd == ["sudo", "true"]:
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+        if cmd[:3] == ["sudo", "timeshift", "--create"]:
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+        if cmd[:1] == ["yay"]:
+            return SimpleNamespace(returncode=1, stderr="fatal error", stdout="")
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", fake_which)
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run)
+
+    code = service.run(_context(tmp_path), console)
+    assert code == 2
+
+    rendered = output.getvalue()
+    assert "DONE  Pre-update snapshot (timeshift)" in rendered
+    assert "FAIL  System and AUR update (yay)" in rendered
+    assert "Rollback available: sudo timeshift --restore" in rendered
+
+
+def test_system_upgrade_snapshot_creation_fails(monkeypatch, tmp_path: Path) -> None:
+    service = SystemUpgradeService(snapshot_tool_fn=lambda: "snapper")
+    output = io.StringIO()
+    console = Console(file=output, width=80, no_color=True)
+
+    def fake_which(name: str) -> str | None:
+        return f"/usr/bin/{name}"
+
+    def fake_run(*args, **kwargs):
+        cmd = args[0]
+        if cmd == ["sudo", "true"]:
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+        if cmd[:3] == ["sudo", "snapper", "create"]:
+            return SimpleNamespace(returncode=1, stderr="no space left", stdout="")
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", fake_which)
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run)
+
+    code = service.run(_context(tmp_path), console)
+    assert code == 2
+
+    rendered = output.getvalue()
+    assert "FAIL  Pre-update snapshot (snapper)" in rendered
+    assert "1 failed" in rendered
+
+
+def test_check_arch_packages_critical_detection(monkeypatch, tmp_path: Path) -> None:
+    service = SystemDryRunService()
+
+    def fake_which(name: str) -> str | None:
+        if name == "checkupdates":
+            return "/usr/bin/checkupdates"
+        return None
+
+    def fake_run(*args, **kwargs):
+        stdout = (
+            "linux 6.10.1-arch1-1 -> 6.10.2-arch1-1\n"
+            "systemd 256.1-1 -> 256.2-1\n"
+            "htop 3.3.0-1 -> 3.3.0-2\n"
+        )
+        return SimpleNamespace(returncode=0, stderr="", stdout=stdout)
+
+    monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", fake_which)
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run)
+
+    result = service._check_arch_packages(_context(tmp_path))
+    assert result.severity is Severity.OUTD
+    assert "3 updates available (reboot required: linux, systemd)" in result.message
+    assert result.details["critical"] == ["linux", "systemd"]
+    assert result.details["packages"] == [
+        "linux 6.10.1-arch1-1 -> 6.10.2-arch1-1",
+        "systemd 256.1-1 -> 256.2-1",
+        "htop 3.3.0-1 -> 3.3.0-2",
+    ]
+
+
+def test_check_aur_packages_critical_detection(monkeypatch, tmp_path: Path) -> None:
+    service = SystemDryRunService()
+
+    def fake_which(name: str) -> str | None:
+        if name == "yay":
+            return "/usr/bin/yay"
+        return None
+
+    def fake_run(*args, **kwargs):
+        stdout = "aur/nvidia-dkms 555.58-1 -> 560.35-1\n" "aur/spotify 1:1.2.42-1 -> 1:1.2.45-1\n"
+        return SimpleNamespace(returncode=0, stderr="", stdout=stdout)
+
+    monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", fake_which)
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run)
+
+    result = service._check_aur_packages(_context(tmp_path), aur_helper="yay")
+    assert result.severity is Severity.OUTD
+    assert "2 AUR updates available (reboot required: nvidia-dkms)" in result.message
+    assert result.details["critical"] == ["nvidia-dkms"]
+    assert result.details["packages"] == [
+        "nvidia-dkms 555.58-1 -> 560.35-1",
+        "spotify 1:1.2.42-1 -> 1:1.2.45-1",
+    ]

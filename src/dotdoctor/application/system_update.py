@@ -471,7 +471,7 @@ class SystemDryRunService:
                 remediation="run checkupdates manually to inspect error",
             )
         completed = result.completed
-        lines = [line for line in completed.stdout.splitlines() if line.strip()]
+        lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
         if completed.returncode == 2 or not lines:
             return _result_for_count("sys.packages", 0)
 
@@ -483,7 +483,41 @@ class SystemDryRunService:
                 remediation="verify mirror availability and run pacman -Sy",
             )
 
-        return _result_for_count("sys.packages", len(lines))
+        pkg_entries: list[str] = []
+        critical_pkgs: list[str] = []
+        for line in lines:
+            parsed = parse_package_update_line(line)
+            if parsed:
+                pkg_name, old_v, new_v = parsed
+                pkg_entries.append(f"{pkg_name} {old_v} -> {new_v}")
+                if pkg_name in CRITICAL_PACKAGES:
+                    critical_pkgs.append(pkg_name)
+            else:
+                pkg_name = line.split()[0] if line.split() else line
+                pkg_entries.append(line)
+                if pkg_name in CRITICAL_PACKAGES:
+                    critical_pkgs.append(pkg_name)
+
+        count = len(lines)
+        unique_critical = sorted(set(critical_pkgs))
+        noun = "update" if count == 1 else "updates"
+        if unique_critical:
+            crit_str = ", ".join(unique_critical)
+            msg = f"{count} {noun} available (reboot required: {crit_str})"
+        else:
+            msg = f"{count} {noun} available"
+
+        return CheckResult(
+            check_id="sys.packages",
+            severity=Severity.OUTD,
+            message=msg,
+            remediation="run dotdoctor --sysup to apply updates",
+            details={
+                "updates": count,
+                "packages": pkg_entries,
+                "critical": unique_critical,
+            },
+        )
 
     def _check_flatpak(self, context: ScanContext) -> CheckResult:
         if shutil.which("flatpak") is None:
@@ -516,8 +550,19 @@ class SystemDryRunService:
                 message=f"flatpak check failed (exit={result.completed.returncode})",
                 remediation="check Flatpak remote configuration",
             )
-        lines = [line for line in result.completed.stdout.splitlines() if line.strip()]
-        return _result_for_count("sys.flatpak", len(lines))
+        lines = [line.strip() for line in result.completed.stdout.splitlines() if line.strip()]
+        if not lines:
+            return _result_for_count("sys.flatpak", 0)
+
+        count = len(lines)
+        noun = "update" if count == 1 else "updates"
+        return CheckResult(
+            check_id="sys.flatpak",
+            severity=Severity.OUTD,
+            message=f"{count} {noun} available",
+            remediation="run dotdoctor --sysup to apply updates",
+            details={"updates": count, "packages": lines},
+        )
 
     def _check_firmware(self, context: ScanContext) -> CheckResult:
         if shutil.which("fwupdmgr") is None:
@@ -676,25 +721,45 @@ class SystemDryRunService:
                 severity=Severity.PASS,
                 message="up to date",
                 remediation=None,
-                details={"updates": 0, "flagged": 0},
+                details={"updates": 0, "flagged": 0, "packages": [], "critical": []},
             )
+
+        aur_entries: list[str] = []
+        critical_aur: list[str] = []
+        for line in lines:
+            parts = line.split()
+            pkg_name = parts[0]
+            if pkg_name.startswith("aur/"):
+                pkg_name = pkg_name[4:]
+            parsed = parse_package_update_line(line)
+            if parsed:
+                _, old_v, new_v = parsed
+                aur_entries.append(f"{pkg_name} {old_v} -> {new_v}")
+            else:
+                aur_entries.append(line)
+            if pkg_name in CRITICAL_PACKAGES:
+                critical_aur.append(pkg_name)
+
+        count = len(lines)
+        unique_crit = sorted(set(critical_aur))
+        noun = "update" if count == 1 else "updates"
+        crit_suffix = f" (reboot required: {', '.join(unique_crit)})" if unique_crit else ""
         if flagged:
-            return CheckResult(
-                check_id="sys.aur",
-                severity=Severity.OUTD,
-                message=(
-                    f"{len(lines)} AUR update{'s' if len(lines) != 1 else ''} available "
-                    f"({len(flagged)} flagged out-of-date)"
-                ),
-                remediation="run dotdoctor --sysup to apply updates",
-                details={"updates": len(regular), "flagged": len(flagged)},
-            )
+            msg = f"{count} AUR {noun} available ({len(flagged)} flagged out-of-date){crit_suffix}"
+        else:
+            msg = f"{len(regular)} AUR {noun} available{crit_suffix}"
+
         return CheckResult(
             check_id="sys.aur",
             severity=Severity.OUTD,
-            message=f"{len(regular)} AUR update{'s' if len(regular) != 1 else ''} available",
+            message=msg,
             remediation="run dotdoctor --sysup to apply updates",
-            details={"updates": len(regular), "flagged": 0},
+            details={
+                "updates": len(regular),
+                "flagged": len(flagged),
+                "packages": aur_entries,
+                "critical": unique_crit,
+            },
         )
 
     def _check_pacman_cache(
@@ -985,6 +1050,67 @@ def _result_for_count(check_id: str, updates: int) -> CheckResult:
     )
 
 
+CRITICAL_PACKAGES: frozenset[str] = frozenset(
+    {
+        "linux",
+        "linux-zen",
+        "linux-lts",
+        "linux-hardened",
+        "linux-cachyos",
+        "linux-cachyos-bore",
+        "linux-cachyos-lto",
+        "linux-firmware",
+        "nvidia",
+        "nvidia-open",
+        "nvidia-lts",
+        "nvidia-utils",
+        "nvidia-dkms",
+        "mesa",
+        "vulkan-radeon",
+        "vulkan-intel",
+        "systemd",
+        "systemd-libs",
+        "glibc",
+        "cryptsetup",
+        "mkinitcpio",
+        "dracut",
+        "grub",
+    }
+)
+
+
+def parse_package_update_line(line: str) -> tuple[str, str, str] | None:
+    """Parse 'pkgname old_version -> new_version' from package managers."""
+    parts = line.split()
+    if len(parts) >= 4 and parts[2] in {"->", "→"}:
+        return parts[0], parts[1], parts[3]
+    if len(parts) == 3 and parts[0] not in {"->", "→"}:
+        return parts[0], parts[1], parts[2]
+    return None
+
+
+def detect_snapshot_tool() -> str | None:
+    """Detect available and configured snapshot tool: 'snapper' or 'timeshift'."""
+    if shutil.which("snapper") is not None:
+        try:
+            res = subprocess.run(
+                ["snapper", "list-configs"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if res.returncode == 0 and len(res.stdout.strip().splitlines()) > 1:
+                return "snapper"
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    if shutil.which("timeshift") is not None:
+        return "timeshift"
+
+    return None
+
+
 _NETWORK_FAILURE_PATTERNS: frozenset[str] = frozenset(
     {
         "failed to retrieve",
@@ -1126,9 +1252,11 @@ class SystemUpgradeService:
         self,
         is_online_fn: Callable[[], bool] = is_online,
         aur_helper_fn: Callable[[], str | None] = detect_aur_helper,
+        snapshot_tool_fn: Callable[[], str | None] = detect_snapshot_tool,
     ) -> None:
         self._is_online_fn = is_online_fn
         self._aur_helper_fn = aur_helper_fn
+        self._snapshot_tool_fn = snapshot_tool_fn
 
     def run(self, context: ScanContext, console: Console) -> int:
         if not self._is_online_fn():
@@ -1162,6 +1290,15 @@ class SystemUpgradeService:
         fail_count = 0
         skip_count = 0
         console_width = getattr(console, "width", 80) or 80
+
+        snap_err, snap_status, created_snap = self._create_pre_update_snapshot(console)
+        had_error |= snap_err
+        if snap_status == "done":
+            done_count += 1
+        elif snap_status == "fail":
+            fail_count += 1
+        else:
+            skip_count += 1
 
         mirror_err, mirror_status = self._refresh_mirrors(console)
         had_error |= mirror_err
@@ -1369,6 +1506,14 @@ class SystemUpgradeService:
                 )
             else:
                 console.print("[dim]All updates completed successfully.[/dim]")
+        elif created_snap:
+            if created_snap == "snapper":
+                console.print(
+                    "\n[dim]Rollback available: sudo snapper rollback "
+                    "or select snapshot in bootloader[/dim]"
+                )
+            elif created_snap == "timeshift":
+                console.print("\n[dim]Rollback available: sudo timeshift --restore[/dim]")
 
         reboot_status = detect_reboot_status()
         if reboot_status.required:
@@ -1377,6 +1522,39 @@ class SystemUpgradeService:
                 f"[yellow]{reboot_status.reason}[/yellow]"
             )
         return 2 if had_error else 0
+
+    def _create_pre_update_snapshot(self, console: Console) -> tuple[bool, str, str | None]:
+        console_width = getattr(console, "width", 80) or 80
+        tool = self._snapshot_tool_fn()
+        if tool == "snapper":
+            cmd = ["sudo", "snapper", "create", "-d", "dotdoctor pre-sysup", "-t", "single", "-p"]
+            err, _, _ = self._run_step(cmd, console, "Pre-update snapshot (snapper)")
+            if err:
+                return True, "fail", None
+            return False, "done", "snapper"
+        if tool == "timeshift":
+            cmd = [
+                "sudo",
+                "timeshift",
+                "--create",
+                "--comments",
+                "dotdoctor pre-sysup",
+                "--tags",
+                "D",
+            ]
+            err, _, _ = self._run_step(cmd, console, "Pre-update snapshot (timeshift)")
+            if err:
+                return True, "fail", None
+            return False, "done", "timeshift"
+
+        for line_text in format_status_line(
+            STATUS_SKIP,
+            "Pre-update snapshot",
+            detail="(no snapshot tool configured)",
+            width=console_width,
+        ):
+            console.print(line_text)
+        return False, "skip", None
 
     def _refresh_mirrors(self, console: Console) -> tuple[bool, str]:
         console_width = getattr(console, "width", 80) or 80

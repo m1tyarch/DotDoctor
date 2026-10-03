@@ -411,3 +411,104 @@ def test_render_terminal_report_animation_all_passed(monkeypatch) -> None:
         assert u.startswith("All ")
         assert u.endswith("checks passed")
     assert updates[-1] == "All 2 checks passed"
+
+
+def test_render_terminal_report_packages_default_truncation() -> None:
+    output = io.StringIO()
+    console = Console(file=output, width=80, color_system=None)
+
+    pkgs = [
+        "linux 6.10.1 -> 6.10.2",
+        "vim 9.1.0 -> 9.1.1",
+        "git 2.45.0 -> 2.45.1",
+        "htop 3.3.0 -> 3.3.1",
+        "zsh 5.9 -> 5.10",
+    ]
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(
+                check_id="sys.packages",
+                severity=Severity.OUTD,
+                message="5 updates available (reboot required: linux)",
+                remediation="run dotdoctor --sysup",
+                details={"packages": pkgs, "critical": ["linux"]},
+            )
+        ],
+        summary={"PASS": 0, "OUTD": 1, "WARN": 0, "FAIL": 0},
+    )
+
+    render_terminal_report(report, console, verbose=False)
+    rendered = output.getvalue()
+
+    assert "• linux 6.10.1 -> 6.10.2" in rendered
+    assert "• vim 9.1.0 -> 9.1.1" in rendered
+    assert "• git 2.45.0 -> 2.45.1" in rendered
+    assert "• (2 more packages, use -v to show all)" in rendered
+    assert "• htop" not in rendered
+    assert "• zsh" not in rendered
+
+
+def test_render_terminal_report_packages_verbose() -> None:
+    output = io.StringIO()
+    console = Console(file=output, width=80, color_system=None)
+
+    pkgs = [
+        "linux 6.10.1 -> 6.10.2",
+        "vim 9.1.0 -> 9.1.1",
+        "git 2.45.0 -> 2.45.1",
+        "htop 3.3.0 -> 3.3.1",
+        "zsh 5.9 -> 5.10",
+    ]
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(
+                check_id="sys.packages",
+                severity=Severity.OUTD,
+                message="5 updates available",
+                remediation="run dotdoctor --sysup",
+                details={"packages": pkgs},
+            )
+        ],
+        summary={"PASS": 0, "OUTD": 1, "WARN": 0, "FAIL": 0},
+    )
+
+    render_terminal_report(report, console, verbose=True)
+    rendered = output.getvalue()
+
+    assert "• linux 6.10.1 -> 6.10.2" in rendered
+    assert "• vim 9.1.0 -> 9.1.1" in rendered
+    assert "• git 2.45.0 -> 2.45.1" in rendered
+    assert "• htop 3.3.0 -> 3.3.1" in rendered
+    assert "• zsh 5.9 -> 5.10" in rendered
+    assert "use -v to show all" not in rendered
+
+
+def test_render_terminal_report_packages_singular_omitted() -> None:
+    output = io.StringIO()
+    console = Console(file=output, width=80, color_system=None)
+
+    pkgs = [
+        "pkg1 1.0 -> 1.1",
+        "pkg2 1.0 -> 1.1",
+        "pkg3 1.0 -> 1.1",
+        "pkg4 1.0 -> 1.1",
+    ]
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(
+                check_id="sys.packages",
+                severity=Severity.OUTD,
+                message="4 updates available",
+                details={"packages": pkgs},
+            )
+        ],
+        summary={"PASS": 0, "OUTD": 1, "WARN": 0, "FAIL": 0},
+    )
+
+    render_terminal_report(report, console, verbose=False)
+    rendered = output.getvalue()
+
+    assert "• (1 more package, use -v to show all)" in rendered
