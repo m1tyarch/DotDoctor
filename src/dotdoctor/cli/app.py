@@ -16,6 +16,14 @@ from dotdoctor.application.auto_fix import InteractiveAutoFixer
 from dotdoctor.application.system_update import SystemDryRunService, SystemUpgradeService
 from dotdoctor.application.use_cases import RunScanUseCase
 from dotdoctor.cli.render import build_live_dashboard, render_terminal_report
+from dotdoctor.cli.theme import (
+    GAP,
+    INDENT,
+    STATUS_DONE,
+    STATUS_WIDTH,
+    STYLE_DONE,
+    format_header,
+)
 from dotdoctor.domain.context import ScanContext
 from dotdoctor.domain.models import CheckResult, ScanReport, Severity
 from dotdoctor.infrastructure.checks.registry import resolve_checks
@@ -213,38 +221,54 @@ def _system_dry_run_impl(fix_mode: bool = False) -> None:
         path_value=os.environ.get("PATH", ""),
         shell=os.environ.get("SHELL"),
     )
+    console.print(format_header(context.profile))
+    console.print()
+
     service = SystemDryRunService()
     tasks = service.build_tasks(context)
 
     states: dict[str, str] = {task.check_id: "running" for task in tasks}
 
     def _build_steps_table() -> Table:
-        steps = Table.grid(expand=False)
-        steps.add_column(justify="left")
-        steps.add_column(justify="left")
+        grid = Table.grid(expand=False)
+        grid.add_column()
+        grid.add_column(width=STATUS_WIDTH)
+        grid.add_column()
+        grid.add_column()
         for task in tasks:
-            status: str | Spinner
+            st_renderable: Text | Spinner
             if states[task.check_id] == "done":
-                status = "[green]Done[/green]"
+                st_renderable = Text(STATUS_DONE, style=STYLE_DONE)
             else:
-                status = Spinner("dots", text="Running")
-            steps.add_row(task.label, status)
-        return steps
+                st_renderable = Spinner("dots")
+            grid.add_row(INDENT, st_renderable, GAP, task.label)
+        return grid
 
-    with Live(
-        _build_steps_table(),
-        console=console,
-        transient=True,
-        refresh_per_second=12,
-    ) as live:
+    is_interactive = (
+        console.is_terminal
+        and not console.is_dumb_terminal
+        and not os.environ.get("NO_ANIMATION")
+        and not os.environ.get("DOTDOCTOR_NO_ANIMATION")
+        and not os.environ.get("NO_COLOR")
+    )
 
-        def _mark_done(check_id: str) -> None:
-            states[check_id] = "done"
-            live.update(_build_steps_table())
+    if is_interactive:
+        with Live(
+            _build_steps_table(),
+            console=console,
+            transient=True,
+            refresh_per_second=12.5,
+        ) as live:
 
-        report = service.run_with_progress(context, on_task_complete=_mark_done)
+            def _mark_done(check_id: str) -> None:
+                states[check_id] = "done"
+                live.update(_build_steps_table())
 
-    render_terminal_report(report, console)
+            report = service.run_with_progress(context, on_task_complete=_mark_done)
+    else:
+        report = service.run_with_progress(context)
+
+    render_terminal_report(report, console, print_header=False)
 
     if fix_mode:
         fixer = InteractiveAutoFixer(console)
@@ -257,6 +281,9 @@ def _system_dry_run_impl(fix_mode: bool = False) -> None:
     if has_updates:
         console.print()
         if _safe_confirm("Update everything now?", default=True):
+            console.print()
+            console.print(format_header("system update"))
+            console.print()
             upgrade_service = SystemUpgradeService()
             upgrade_service.run(context, console)
 
@@ -278,6 +305,8 @@ def _system_upgrade_impl() -> None:
         path_value=os.environ.get("PATH", ""),
         shell=os.environ.get("SHELL"),
     )
+    console.print(format_header("system update"))
+    console.print()
     code = SystemUpgradeService().run(context, console)
     raise typer.Exit(code=code)
 

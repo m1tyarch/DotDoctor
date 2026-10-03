@@ -1,6 +1,9 @@
+import io
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+
+from rich.console import Console
 
 from dotdoctor.application.system_update import (
     DiskSpaceStatus,
@@ -20,9 +23,10 @@ from dotdoctor.domain.models import Severity
 class DummyConsole:
     def __init__(self) -> None:
         self.messages: list[str] = []
+        self.width: int = 80
 
-    def print(self, message: str) -> None:
-        self.messages.append(message)
+    def print(self, message: object = "") -> None:
+        self.messages.append(getattr(message, "plain", str(message)))
 
 
 def _context(tmp_path: Path) -> ScanContext:
@@ -850,7 +854,7 @@ def test_run_step_success_formatting(monkeypatch) -> None:
     had_error, is_net_fail = service._run_step(["test"], console, "Test Step")
     assert had_error is False
     assert is_net_fail is False
-    assert any("done" in msg and "Test Step" in msg for msg in console.messages)
+    assert any("DONE" in msg and "Test Step" in msg for msg in console.messages)
 
 
 def test_run_step_failure_reveals_error_lines(monkeypatch) -> None:
@@ -869,7 +873,7 @@ def test_run_step_failure_reveals_error_lines(monkeypatch) -> None:
     had_error, is_net_fail = service._run_step(["test"], console, "Test Step")
     assert had_error is True
     assert is_net_fail is False
-    assert any("fail" in msg and "Test Step" in msg for msg in console.messages)
+    assert any("FAIL" in msg and "Test Step" in msg for msg in console.messages)
     assert any("error: file conflict" in msg for msg in console.messages)
     assert any("│" in msg for msg in console.messages)
 
@@ -895,3 +899,76 @@ def test_run_step_timeout_and_oserror(monkeypatch) -> None:
     assert had_error is True
     assert is_net_fail is False
     assert any("failed to start" in msg for msg in console.messages)
+
+
+def test_system_upgrade_console_layout_and_no_ansi_no_color(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    service = SystemUpgradeService()
+    output = io.StringIO()
+    console = Console(file=output, width=80, no_color=True)
+
+    def fake_which(name: str) -> str | None:
+        if name in {"yay", "flatpak", "fwupdmgr", "paccache"}:
+            return f"/usr/bin/{name}"
+        return None
+
+    def fake_run(*args, **kwargs):
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", fake_which)
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run)
+
+    code = service.run(_context(tmp_path), console)
+    assert code == 0
+
+    rendered = output.getvalue()
+    # No ANSI escape sequences
+    assert "\x1b[" not in rendered
+    # No exclamation marks or trailing ellipsis in service strings
+    assert "!" not in rendered
+    # Status column is left aligned with 4 chars
+    assert "  DONE  System and AUR update (yay)" in rendered
+    assert "  DONE  Flatpak update" in rendered
+    assert "  DONE  Flatpak cleanup (unused runtimes)" in rendered
+    assert "  DONE  Pacman cache cleanup (keep 2 versions)" in rendered
+    assert "  DONE  Pacman cache cleanup (uninstalled packages)" in rendered
+    assert "  SKIP  Oh-My-Zsh update (not installed)" in rendered
+    assert "  DONE  Firmware update" in rendered
+    # Final summary in scan format
+    assert "6 done · 2 skipped" in rendered
+
+
+def test_system_upgrade_summary_counters_on_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    service = SystemUpgradeService()
+    output = io.StringIO()
+    console = Console(file=output, width=80, no_color=True)
+
+    def fake_which(name: str) -> str | None:
+        if name in {"yay"}:
+            return f"/usr/bin/{name}"
+        return None
+
+    def fake_run(*args, **kwargs):
+        command = args[0]
+        if command == ["sudo", "true"]:
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+        if command[:1] == ["yay"]:
+            return SimpleNamespace(returncode=1, stderr="fatal package conflict", stdout="")
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", fake_which)
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run)
+
+    code = service.run(_context(tmp_path), console)
+    assert code == 2
+
+    rendered = output.getvalue()
+    assert "\x1b[" not in rendered
+    assert "  FAIL  System and AUR update (yay) (exit=1)" in rendered
+    assert "fatal package conflict" in rendered
+    assert "1 failed" in rendered

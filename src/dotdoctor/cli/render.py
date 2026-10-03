@@ -8,6 +8,17 @@ from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
+from dotdoctor.cli.theme import (
+    STATUS_FAIL,
+    STATUS_OLD,
+    STATUS_PASS,
+    STATUS_STYLES,
+    STATUS_WARN,
+    STYLE_DEFAULT,
+    STYLE_OLD,
+    STYLE_WARN,
+    format_header,
+)
 from dotdoctor.domain.models import CheckResult, ScanReport, Severity
 
 DEFAULT_ANIMATION_DELAY = 0.025
@@ -23,20 +34,19 @@ def _sleep(seconds: float) -> None:
 
 def _status_label(severity: Severity) -> str:
     if severity == Severity.OUTD:
-        return "OLD"
+        return STATUS_OLD
+    if severity == Severity.PASS:
+        return STATUS_PASS
+    if severity == Severity.WARN:
+        return STATUS_WARN
+    if severity == Severity.FAIL:
+        return STATUS_FAIL
     return severity.value
 
 
 def _status_style(severity: Severity) -> str:
-    if severity == Severity.PASS:
-        return "dim green"
-    if severity == Severity.OUTD:
-        return "bold cyan"
-    if severity == Severity.WARN:
-        return "bold yellow"
-    if severity == Severity.FAIL:
-        return "bold red"
-    return "default"
+    label = _status_label(severity)
+    return STATUS_STYLES.get(label, STYLE_DEFAULT)
 
 
 def format_summary(
@@ -65,10 +75,10 @@ def format_summary(
         parts.append(("0 passed", "dim"))
 
     if outd_count > 0:
-        parts.append((f"{outd_count} outdated", "cyan"))
+        parts.append((f"{outd_count} outdated", STYLE_OLD))
     if warn_count > 0:
         noun = "warning" if warn_count == 1 else "warnings"
-        parts.append((f"{warn_count} {noun}", "yellow"))
+        parts.append((f"{warn_count} {noun}", STYLE_WARN))
     if fail_count > 0:
         parts.append((f"{fail_count} failed", "red"))
 
@@ -97,11 +107,11 @@ def render_terminal_report(
     animate: bool | None = None,
     delay: float = DEFAULT_ANIMATION_DELAY,
     summary_delay: float = DEFAULT_SUMMARY_DELAY,
+    print_header: bool = True,
 ) -> None:
-    header = Text("DotDoctor · ")
-    header.append(report.profile, style="dim")
-    console.print(header)
-    console.print()
+    if print_header:
+        console.print(format_header(report.profile))
+        console.print()
 
     if not report.results:
         console.print(format_summary(report.summary))
@@ -233,8 +243,7 @@ def build_live_dashboard(
     elapsed_seconds: float,
     active_check_id: str | None,
 ) -> Layout:
-    header = Text("DotDoctor \u00b7 ")
-    header.append(f"{profile}  ({elapsed_seconds:.1f}s)", style="dim")
+    header = format_header(f"{profile}  ({elapsed_seconds:.1f}s)")
 
     completed = len(results)
     ratio = completed / total_checks if total_checks > 0 else 1.0

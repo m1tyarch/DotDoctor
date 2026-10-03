@@ -24,8 +24,8 @@ def test_status_label_outd_mapped_to_old() -> None:
 
 def test_status_styles() -> None:
     assert _status_style(Severity.PASS) == "dim green"
-    assert _status_style(Severity.OUTD) == "bold cyan"
-    assert _status_style(Severity.WARN) == "bold yellow"
+    assert _status_style(Severity.OUTD) == "cyan"
+    assert _status_style(Severity.WARN) == "yellow"
     assert _status_style(Severity.FAIL) == "bold red"
 
 

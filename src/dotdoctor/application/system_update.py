@@ -4,13 +4,27 @@ import re
 import shutil
 import socket
 import subprocess
+import textwrap
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 
 from rich.console import Console
+from rich.live import Live
+from rich.spinner import Spinner
+from rich.table import Table
 
+from dotdoctor.cli.theme import (
+    GAP,
+    INDENT,
+    STATUS_DONE,
+    STATUS_FAIL,
+    STATUS_SKIP,
+    STATUS_WIDTH,
+    format_status_line,
+    format_sysup_summary,
+)
 from dotdoctor.domain.context import ScanContext
 from dotdoctor.domain.models import CheckResult, ScanReport, Severity
 
@@ -265,7 +279,7 @@ class SystemDryRunService:
             tasks.append(
                 SystemCheckTask(
                     check_id="sys.network",
-                    label="Checking network connection...",
+                    label="Network connection",
                     runner=lambda: CheckResult(
                         check_id="sys.network",
                         severity=Severity.FAIL,
@@ -278,7 +292,7 @@ class SystemDryRunService:
             tasks.append(
                 SystemCheckTask(
                     check_id="sys.packages",
-                    label="Checking packages...",
+                    label="Packages",
                     runner=lambda: self._check_arch_packages(context),
                 )
             )
@@ -288,7 +302,7 @@ class SystemDryRunService:
                 tasks.append(
                     SystemCheckTask(
                         check_id="sys.aur",
-                        label=f"Checking AUR ({aur_helper})...",
+                        label=f"AUR ({aur_helper})",
                         runner=lambda: self._check_aur_packages(context, aur_helper),
                     )
                 )
@@ -297,14 +311,14 @@ class SystemDryRunService:
                 tasks.append(
                     SystemCheckTask(
                         check_id="sys.flatpak",
-                        label="Scanning Flatpak packages...",
+                        label="Flatpak packages",
                         runner=lambda: self._check_flatpak(context),
                     )
                 )
                 tasks.append(
                     SystemCheckTask(
                         check_id="sys.flatpak-unused",
-                        label="Checking unused Flatpaks...",
+                        label="Unused Flatpaks",
                         runner=lambda: self._check_flatpak_unused(context),
                     )
                 )
@@ -312,7 +326,7 @@ class SystemDryRunService:
             tasks.append(
                 SystemCheckTask(
                     check_id="sys.firmware",
-                    label="Querying firmware updates...",
+                    label="Firmware updates",
                     runner=lambda: self._check_firmware(context),
                 )
             )
@@ -322,7 +336,7 @@ class SystemDryRunService:
                 tasks.append(
                     SystemCheckTask(
                         check_id="sys.shell-omz",
-                        label="Checking Oh-My-Zsh updates...",
+                        label="Oh-My-Zsh updates",
                         runner=lambda: self._check_oh_my_zsh(omz_path),
                     )
                 )
@@ -330,14 +344,14 @@ class SystemDryRunService:
         tasks.append(
             SystemCheckTask(
                 check_id="sys.reboot",
-                label="Checking reboot status...",
+                label="Reboot status",
                 runner=lambda: self._check_reboot(context),
             )
         )
         tasks.append(
             SystemCheckTask(
                 check_id="sys.disk",
-                label="Checking disk space...",
+                label="Disk space",
                 runner=lambda: self._check_disk_space(context),
             )
         )
@@ -346,7 +360,7 @@ class SystemDryRunService:
             tasks.append(
                 SystemCheckTask(
                     check_id="sys.orphans",
-                    label="Checking orphan packages...",
+                    label="Orphan packages",
                     runner=lambda: self._check_orphans(context),
                 )
             )
@@ -355,7 +369,7 @@ class SystemDryRunService:
             tasks.append(
                 SystemCheckTask(
                     check_id="sys.cache",
-                    label="Checking pacman cache...",
+                    label="Pacman cache",
                     runner=lambda: self._check_pacman_cache(context),
                 )
             )
@@ -364,7 +378,7 @@ class SystemDryRunService:
             tasks.append(
                 SystemCheckTask(
                     check_id="sys.pacnew",
-                    label="Checking .pacnew files...",
+                    label=".pacnew files",
                     runner=lambda: self._check_pacnew(context),
                 )
             )
@@ -373,7 +387,7 @@ class SystemDryRunService:
             tasks.append(
                 SystemCheckTask(
                     check_id="sys.services",
-                    label="Checking failed services...",
+                    label="Failed services",
                     runner=lambda: self._check_failed_services(context),
                 )
             )
@@ -382,7 +396,7 @@ class SystemDryRunService:
             tasks.append(
                 SystemCheckTask(
                     check_id="sys.journal",
-                    label="Checking journal disk usage...",
+                    label="Journal disk usage",
                     runner=lambda: self._check_journal(context),
                 )
             )
@@ -397,7 +411,7 @@ class SystemDryRunService:
     def run_with_progress(
         self,
         context: ScanContext,
-        on_task_complete: Callable[[str], None],
+        on_task_complete: Callable[[str], None] | None = None,
     ) -> ScanReport:
         tasks = self.build_tasks(context)
         results = self._run_tasks(tasks, on_task_complete=on_task_complete)
@@ -1062,17 +1076,29 @@ class SystemUpgradeService:
             return 1
         if disk_status.severity == Severity.WARN:
             console.print(
-                f"[yellow]Warning: {disk_status.message} Proceeding with caution...[/yellow]"
+                f"[yellow]Warning: {disk_status.message} Proceeding with caution[/yellow]"
             )
 
-        console.print("[cyan]Caching sudo credentials...[/cyan]")
+        console.print("  [dim]Caching sudo credentials[/dim]")
         sudo_cache = subprocess.run(["sudo", "true"], check=False)
         if sudo_cache.returncode != 0:
             console.print("[red]Failed to cache sudo credentials. Aborting update phase.[/red]")
             return 3
 
         had_error = False
-        had_error |= self._refresh_mirrors(console)
+        done_count = 0
+        fail_count = 0
+        skip_count = 0
+        console_width = getattr(console, "width", 80) or 80
+
+        mirror_err, mirror_status = self._refresh_mirrors(console)
+        had_error |= mirror_err
+        if mirror_status == "done":
+            done_count += 1
+        elif mirror_status == "fail":
+            fail_count += 1
+        else:
+            skip_count += 1
 
         aur_helper = self._aur_helper_fn()
         update_cmd: list[str] | None = None
@@ -1102,9 +1128,9 @@ class SystemUpgradeService:
             if aur_error and is_net_failure:
                 console.print(
                     "[yellow]Mirror or network failure detected. "
-                    "Attempting mirror recovery...[/yellow]"
+                    "Attempting mirror recovery[/yellow]"
                 )
-                mirror_failed = self._refresh_mirrors(console)
+                mirror_failed, _ = self._refresh_mirrors(console)
                 if mirror_failed:
                     console.print(
                         "[red]FAIL: Mirror recovery failed. Package upgrade aborted.[/red]"
@@ -1116,44 +1142,80 @@ class SystemUpgradeService:
                     f"{update_title} (retry after mirror recovery)",
                 )
                 if retry_error:
+                    had_error = True
+                    fail_count += 1
                     console.print(
                         "[red]FAIL: Package upgrade aborted — persistent network failure.[/red]"
                     )
                     return 1
+                done_count += 1
             elif aur_error:
                 had_error = True
+                fail_count += 1
+            else:
+                done_count += 1
         else:
-            console.print(
-                "  [dim]skip  Package update (no supported package manager installed)[/dim]"
-            )
+            for line_text in format_status_line(
+                STATUS_SKIP,
+                "Package update",
+                detail="(no supported package manager installed)",
+                width=console_width,
+            ):
+                console.print(line_text)
+            skip_count += 1
 
         if shutil.which("flatpak") is not None:
             flatpak_error, _ = self._run_step(
                 ["flatpak", "update", "-y"], console, "Flatpak update"
             )
             had_error |= flatpak_error
+            if flatpak_error:
+                fail_count += 1
+            else:
+                done_count += 1
+
             unused_error, _ = self._run_step(
                 ["flatpak", "uninstall", "--unused", "-y"],
                 console,
                 "Flatpak cleanup (unused runtimes)",
             )
             had_error |= unused_error
+            if unused_error:
+                fail_count += 1
+            else:
+                done_count += 1
         else:
-            console.print("  [dim]skip  Flatpak update (not installed)[/dim]")
+            for line_text in format_status_line(
+                STATUS_SKIP,
+                "Flatpak update",
+                detail="(not installed)",
+                width=console_width,
+            ):
+                console.print(line_text)
+            skip_count += 1
 
         if shutil.which("paccache") is not None:
             cache_error, _ = self._run_step(
                 ["sudo", "paccache", "-rk2"],
                 console,
-                "Clean pacman cache (keep 2 versions)",
+                "Pacman cache cleanup (keep 2 versions)",
             )
             had_error |= cache_error
+            if cache_error:
+                fail_count += 1
+            else:
+                done_count += 1
+
             uninstalled_error, _ = self._run_step(
                 ["sudo", "paccache", "-ruk0"],
                 console,
-                "Clean uninstalled packages from cache",
+                "Pacman cache cleanup (uninstalled packages)",
             )
             had_error |= uninstalled_error
+            if uninstalled_error:
+                fail_count += 1
+            else:
+                done_count += 1
 
         omz_upgrade = context.home / ".oh-my-zsh" / "tools" / "upgrade.sh"
         if omz_upgrade.exists():
@@ -1163,14 +1225,36 @@ class SystemUpgradeService:
                 "Oh-My-Zsh update",
             )
             had_error |= omz_error
+            if omz_error:
+                fail_count += 1
+            else:
+                done_count += 1
         else:
-            console.print("  [dim]skip  Oh-My-Zsh update (not installed)[/dim]")
+            for line_text in format_status_line(
+                STATUS_SKIP,
+                "Oh-My-Zsh update",
+                detail="(not installed)",
+                width=console_width,
+            ):
+                console.print(line_text)
+            skip_count += 1
 
         if shutil.which("fwupdmgr") is not None:
             fw_error, _ = self._run_step(["fwupdmgr", "update", "-y"], console, "Firmware update")
             had_error |= fw_error
+            if fw_error:
+                fail_count += 1
+            else:
+                done_count += 1
         else:
-            console.print("  [dim]skip  Firmware update (not installed)[/dim]")
+            for line_text in format_status_line(
+                STATUS_SKIP,
+                "Firmware update",
+                detail="(not installed)",
+                width=console_width,
+            ):
+                console.print(line_text)
+            skip_count += 1
 
         pacnew_files = detect_pacnew_files()
         if pacnew_files:
@@ -1184,32 +1268,26 @@ class SystemUpgradeService:
                 "[yellow]Run 'pacdiff' to review and merge configuration updates.[/yellow]"
             )
 
-        reboot_status = detect_reboot_status()
-        if had_error:
-            console.print("[yellow]System update finished with warnings/errors.[/yellow]")
-            if reboot_status.required:
-                console.print(
-                    f"\n[bold yellow]System reboot recommended:[/bold yellow] "
-                    f"[yellow]{reboot_status.reason}[/yellow]"
-                )
-            return 2
+        console.print()
+        console.print(format_sysup_summary(done=done_count, failed=fail_count, skipped=skip_count))
 
-        console.print("[green]System update completed successfully![/green]")
+        reboot_status = detect_reboot_status()
         if reboot_status.required:
             console.print(
                 f"\n[bold yellow]System reboot recommended:[/bold yellow] "
                 f"[yellow]{reboot_status.reason}[/yellow]"
             )
-        return 0
+        return 2 if had_error else 0
 
-    def _refresh_mirrors(self, console: Console) -> bool:
+    def _refresh_mirrors(self, console: Console) -> tuple[bool, str]:
+        console_width = getattr(console, "width", 80) or 80
         if shutil.which("cachyos-rate-mirrors") is not None:
             had_error, _ = self._run_step(
                 ["sudo", "cachyos-rate-mirrors"],
                 console,
-                "Mirror refresh (cachyos-rate-mirrors)",
+                "Mirror refresh",
             )
-            return had_error
+            return had_error, "fail" if had_error else "done"
 
         if shutil.which("reflector") is not None:
             had_error, _ = self._run_step(
@@ -1226,18 +1304,36 @@ class SystemUpgradeService:
                     "/etc/pacman.d/mirrorlist",
                 ],
                 console,
-                "Mirror refresh (reflector)",
+                "Mirror refresh",
             )
-            return had_error
+            return had_error, "fail" if had_error else "done"
 
-        console.print("  [dim]skip  Mirror refresh (no supported mirror tool installed)[/dim]")
-        return False
+        for line_text in format_status_line(
+            STATUS_SKIP,
+            "Mirror refresh",
+            detail="(no supported mirror tool installed)",
+            width=console_width,
+        ):
+            console.print(line_text)
+        return False, "skip"
 
     def _run_step(self, command: list[str], console: Console, title: str) -> tuple[bool, bool]:
-        is_interactive = bool(getattr(console, "is_terminal", False))
+        console_width = getattr(console, "width", 80) or 80
+        is_interactive = (
+            bool(getattr(console, "is_terminal", False))
+            and not os.environ.get("NO_COLOR")
+            and not os.environ.get("NO_ANIMATION")
+            and not os.environ.get("DOTDOCTOR_NO_ANIMATION")
+        )
         try:
             if is_interactive and hasattr(console, "status"):
-                with console.status(f"[cyan]{title}...[/cyan]", spinner="dots"):
+                grid = Table.grid(expand=False)
+                grid.add_column()
+                grid.add_column(width=STATUS_WIDTH)
+                grid.add_column()
+                grid.add_column()
+                grid.add_row(INDENT, Spinner("dots"), GAP, title)
+                with Live(grid, console=console, transient=True, refresh_per_second=12.5):
                     completed = subprocess.run(
                         command,
                         check=False,
@@ -1252,10 +1348,16 @@ class SystemUpgradeService:
                     text=True,
                 )
         except subprocess.TimeoutExpired:
-            console.print(f"  [bold red]fail[/bold red]  {title} (timed out)")
+            for line_text in format_status_line(
+                STATUS_FAIL, title, detail="(timed out)", width=console_width
+            ):
+                console.print(line_text)
             return True, True
         except (OSError, subprocess.SubprocessError) as exc:
-            console.print(f"  [bold red]fail[/bold red]  {title} (failed to start: {exc})")
+            for line_text in format_status_line(
+                STATUS_FAIL, title, detail=f"(failed to start: {exc})", width=console_width
+            ):
+                console.print(line_text)
             return True, False
 
         stderr_output = (getattr(completed, "stderr", "") or "").strip()
@@ -1264,19 +1366,31 @@ class SystemUpgradeService:
         is_net_failure = _is_mirror_failure(combined_output)
 
         if completed.returncode != 0:
-            console.print(f"  [bold red]fail[/bold red]  {title} (exit={completed.returncode})")
+            for line_text in format_status_line(
+                STATUS_FAIL,
+                title,
+                detail=f"(exit={completed.returncode})",
+                width=console_width,
+            ):
+                console.print(line_text)
             error_text = stderr_output if stderr_output else stdout_output
             if error_text:
                 error_lines = [line.rstrip() for line in error_text.splitlines() if line.strip()]
+                prefix = "        │ "
+                avail_width = max(15, console_width - len(prefix))
                 if len(error_lines) > 10:
                     omitted = len(error_lines) - 10
-                    console.print(f"        [dim]│ ... ({omitted} lines omitted)[/dim]")
+                    console.print(f"        [dim]│ ({omitted} lines omitted)[/dim]")
                     error_lines = error_lines[-10:]
                 for err_line in error_lines:
-                    console.print(f"        [dim]│[/dim] [red]{err_line}[/red]")
+                    wrapped_err = textwrap.wrap(err_line, width=avail_width) or [err_line]
+                    for i, w in enumerate(wrapped_err):
+                        p = prefix if i == 0 else "          "
+                        console.print(f"[dim]{p}{w}[/dim]")
             return True, is_net_failure
 
-        console.print(f"  [green]done[/green]  {title}")
+        for line_text in format_status_line(STATUS_DONE, title, width=console_width):
+            console.print(line_text)
         return False, False
 
 

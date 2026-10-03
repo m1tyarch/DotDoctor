@@ -80,7 +80,9 @@ class InteractiveAutoFixer:
 
             if outcome.changed:
                 changed_any = True
-                self._console.print(f"[green]FIXED[/green] {result.check_id}: {outcome.note}")
+                self._console.print(
+                    f"[dim green]FIXED[/dim green] {result.check_id}: {outcome.note}"
+                )
                 results[index] = CheckResult(
                     check_id=result.check_id,
                     severity=Severity.PASS,
@@ -96,12 +98,12 @@ class InteractiveAutoFixer:
         if not had_issues:
             if any(r.severity is Severity.OUTD for r in results):
                 self._console.print(
-                    "[cyan]No issues found. To update packages, run dotdoctor --sysup.[/cyan]"
+                    "[dim]No issues found. To update packages, run dotdoctor --sysup.[/dim]"
                 )
             else:
-                self._console.print("[green]Nothing to fix. All checks are PASS.[/green]")
+                self._console.print("[dim]Nothing to fix. All checks are PASS.[/dim]")
         elif changed_any:
-            self._console.print("[green]Auto-fix phase completed.[/green]")
+            self._console.print("[dim]Auto-fix phase completed.[/dim]")
         return ScanReport(profile=report.profile, results=results)
 
     def _resolve_fix_handler(
@@ -123,17 +125,17 @@ class InteractiveAutoFixer:
 
     def _resolve_action_label(self, check_id: str) -> str:
         labels: dict[str, str] = {
-            "path.integrity": "Cleaning PATH entries in shell configuration...",
-            "sys.orphans": "Removing orphan packages...",
-            "sys.cache": "Cleaning pacman package cache...",
-            "sys.flatpak-unused": "Removing unused Flatpak runtimes...",
-            "sys.pacnew": "Reviewing .pacnew files with pacdiff...",
-            "sys.journal": "Vacuuming systemd journal logs to 1G...",
-            "sys.reboot": "Initiating system reboot...",
-            "sys.services": "Resetting failed systemd services...",
-            "sys.disk": "Cleaning package cache and journal logs...",
+            "path.integrity": "Cleaning PATH entries in shell configuration",
+            "sys.orphans": "Removing orphan packages",
+            "sys.cache": "Cleaning pacman package cache",
+            "sys.flatpak-unused": "Removing unused Flatpak runtimes",
+            "sys.pacnew": "Reviewing .pacnew files with pacdiff",
+            "sys.journal": "Vacuuming systemd journal logs to 1G",
+            "sys.reboot": "Initiating system reboot",
+            "sys.services": "Resetting failed systemd services",
+            "sys.disk": "Cleaning package cache and journal logs",
         }
-        return labels.get(check_id, f"Remediating {check_id}...")
+        return labels.get(check_id, f"Remediating {check_id}")
 
     def _preview_path_integrity_diff(self, context: ScanContext) -> None:
         raw_entries = context.path_value.split(":") if context.path_value else []
@@ -183,8 +185,8 @@ class InteractiveAutoFixer:
         self._console.print(
             Panel(
                 syntax,
-                title=f"[cyan]Proposed Diff: {filepath.name}[/cyan]",
-                border_style="cyan",
+                title=f"Proposed Diff: {filepath.name}",
+                border_style="dim",
             )
         )
 
