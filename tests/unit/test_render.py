@@ -311,11 +311,12 @@ def test_render_terminal_report_animation_enabled(monkeypatch) -> None:
     sleeps: list[float] = []
     monkeypatch.setattr("dotdoctor.cli.render._sleep", lambda sec: sleeps.append(sec))
 
-    render_terminal_report(report, console, animate=True, delay=0.01)
+    render_terminal_report(report, console, animate=True, delay=0.01, summary_delay=0.02)
 
-    # 3 sleeps for item lines + 2 sleeps for rolling summary count-up
-    assert len(sleeps) == 5
-    assert all(s == 0.01 for s in sleeps)
+    # 3 sleeps for item lines + 7 sleeps for rolling summary count-up (1 initial + 6 steps)
+    assert len(sleeps) == 10
+    assert sleeps[:3] == [0.01, 0.01, 0.01]
+    assert sleeps[3:] == [0.02] * 7
 
 
 def test_render_terminal_report_animation_disabled_by_default_non_terminal(monkeypatch) -> None:

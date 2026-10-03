@@ -11,6 +11,7 @@ from rich.text import Text
 from dotdoctor.domain.models import CheckResult, ScanReport, Severity
 
 DEFAULT_ANIMATION_DELAY = 0.025
+DEFAULT_SUMMARY_DELAY = 0.065
 
 
 def _sleep(seconds: float) -> None:
@@ -52,6 +53,9 @@ def format_summary(summary: dict[str, int], is_final: bool = True) -> Text:
     parts: list[tuple[str, str | None]] = []
     if pass_count > 0:
         parts.append((f"{pass_count} passed", None))
+    elif not is_final:
+        parts.append(("0 passed", "dim"))
+
     if outd_count > 0:
         parts.append((f"{outd_count} outdated", "cyan"))
     if warn_count > 0:
@@ -84,8 +88,9 @@ def render_terminal_report(
     console: Console,
     animate: bool | None = None,
     delay: float = DEFAULT_ANIMATION_DELAY,
+    summary_delay: float = DEFAULT_SUMMARY_DELAY,
 ) -> None:
-    header = Text("DotDoctor \u00b7 ")
+    header = Text("DotDoctor · ")
     header.append(report.profile, style="dim")
     console.print(header)
     console.print()
@@ -151,7 +156,7 @@ def render_terminal_report(
 
     console.print()
     if should_animate:
-        _animate_summary(report.summary, console, delay=delay)
+        _animate_summary(report.summary, console, delay=summary_delay)
     else:
         console.print(format_summary(report.summary))
 
@@ -159,7 +164,7 @@ def render_terminal_report(
 def _animate_summary(
     summary: dict[str, int],
     console: Console,
-    delay: float = DEFAULT_ANIMATION_DELAY,
+    delay: float = DEFAULT_SUMMARY_DELAY,
 ) -> None:
     pass_target = summary.get("PASS", 0)
     outd_target = summary.get("OUTD", 0)
@@ -171,13 +176,8 @@ def _animate_summary(
         console.print(format_summary(summary, is_final=True))
         return
 
-    steps = min(5, total_target)
-    initial_summary = {
-        "PASS": min(1, pass_target),
-        "OUTD": 0,
-        "WARN": 0,
-        "FAIL": 0,
-    }
+    steps = min(12, max(6, total_target))
+    initial_summary = {"PASS": 0, "OUTD": 0, "WARN": 0, "FAIL": 0}
 
     try:
         with Live(
@@ -186,6 +186,7 @@ def _animate_summary(
             transient=False,
             refresh_per_second=30,
         ) as live:
+            _sleep(delay)
             for step in range(1, steps + 1):
                 ratio = step / steps
                 is_final = step == steps
@@ -193,10 +194,10 @@ def _animate_summary(
                     interim = summary
                 else:
                     interim = {
-                        "PASS": int(pass_target * ratio),
-                        "OUTD": int(outd_target * ratio),
-                        "WARN": int(warn_target * ratio),
-                        "FAIL": int(fail_target * ratio),
+                        "PASS": int(round(pass_target * ratio)),
+                        "OUTD": int(round(outd_target * ratio)),
+                        "WARN": int(round(warn_target * ratio)),
+                        "FAIL": int(round(fail_target * ratio)),
                     }
                 live.update(format_summary(interim, is_final=is_final))
                 _sleep(delay)
