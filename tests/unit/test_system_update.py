@@ -836,3 +836,62 @@ def test_system_upgrade_with_paru_and_maintenance_cleanup(monkeypatch, tmp_path:
     assert ["sudo", "paccache", "-rk2"] in commands
     assert ["sudo", "paccache", "-ruk0"] in commands
     assert any(".pacnew configuration files found" in msg for msg in console.messages)
+
+
+def test_run_step_success_formatting(monkeypatch) -> None:
+    service = SystemUpgradeService()
+    console = DummyConsole()
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.subprocess.run",
+        lambda *a, **kw: SimpleNamespace(returncode=0, stderr="", stdout=""),
+    )
+
+    had_error, is_net_fail = service._run_step(["test"], console, "Test Step")
+    assert had_error is False
+    assert is_net_fail is False
+    assert any("done" in msg and "Test Step" in msg for msg in console.messages)
+
+
+def test_run_step_failure_reveals_error_lines(monkeypatch) -> None:
+    service = SystemUpgradeService()
+    console = DummyConsole()
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.subprocess.run",
+        lambda *a, **kw: SimpleNamespace(
+            returncode=1,
+            stderr="error: file conflict\n/usr/bin/foo exists",
+            stdout="",
+        ),
+    )
+
+    had_error, is_net_fail = service._run_step(["test"], console, "Test Step")
+    assert had_error is True
+    assert is_net_fail is False
+    assert any("fail" in msg and "Test Step" in msg for msg in console.messages)
+    assert any("error: file conflict" in msg for msg in console.messages)
+    assert any("│" in msg for msg in console.messages)
+
+
+def test_run_step_timeout_and_oserror(monkeypatch) -> None:
+    service = SystemUpgradeService()
+    console = DummyConsole()
+
+    def raise_timeout(*a, **kw):
+        raise subprocess.TimeoutExpired(cmd=["test"], timeout=1)
+
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", raise_timeout)
+    had_error, is_net_fail = service._run_step(["test"], console, "Timeout Step")
+    assert had_error is True
+    assert is_net_fail is True
+    assert any("timed out" in msg for msg in console.messages)
+
+    def raise_oserror(*a, **kw):
+        raise OSError("binary not found")
+
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", raise_oserror)
+    had_error, is_net_fail = service._run_step(["test"], console, "Error Step")
+    assert had_error is True
+    assert is_net_fail is False
+    assert any("failed to start" in msg for msg in console.messages)

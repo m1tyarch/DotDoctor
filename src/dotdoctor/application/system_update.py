@@ -1124,7 +1124,7 @@ class SystemUpgradeService:
                 had_error = True
         else:
             console.print(
-                "[dim]Skipping package update: no supported package manager installed.[/dim]"
+                "  [dim]skip  Package update (no supported package manager installed)[/dim]"
             )
 
         if shutil.which("flatpak") is not None:
@@ -1139,7 +1139,7 @@ class SystemUpgradeService:
             )
             had_error |= unused_error
         else:
-            console.print("[dim]Skipping Flatpak update: component is not installed.[/dim]")
+            console.print("  [dim]skip  Flatpak update (not installed)[/dim]")
 
         if shutil.which("paccache") is not None:
             cache_error, _ = self._run_step(
@@ -1164,13 +1164,13 @@ class SystemUpgradeService:
             )
             had_error |= omz_error
         else:
-            console.print("[dim]Skipping Oh-My-Zsh update: component is not installed.[/dim]")
+            console.print("  [dim]skip  Oh-My-Zsh update (not installed)[/dim]")
 
         if shutil.which("fwupdmgr") is not None:
             fw_error, _ = self._run_step(["fwupdmgr", "update", "-y"], console, "Firmware update")
             had_error |= fw_error
         else:
-            console.print("[dim]Skipping firmware update: component is not installed.[/dim]")
+            console.print("  [dim]skip  Firmware update (not installed)[/dim]")
 
         pacnew_files = detect_pacnew_files()
         if pacnew_files:
@@ -1230,27 +1230,53 @@ class SystemUpgradeService:
             )
             return had_error
 
-        console.print("[dim]Skipping mirror refresh: no supported mirror tool installed.[/dim]")
+        console.print("  [dim]skip  Mirror refresh (no supported mirror tool installed)[/dim]")
         return False
 
     def _run_step(self, command: list[str], console: Console, title: str) -> tuple[bool, bool]:
-        console.print(f"[cyan]Running:[/cyan] {title}")
+        is_interactive = bool(getattr(console, "is_terminal", False))
         try:
-            completed = subprocess.run(command, check=False, stderr=subprocess.PIPE, text=True)
+            if is_interactive and hasattr(console, "status"):
+                with console.status(f"[cyan]{title}...[/cyan]", spinner="dots"):
+                    completed = subprocess.run(
+                        command,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+            else:
+                completed = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
         except subprocess.TimeoutExpired:
-            console.print(f"[red]{title} timed out.[/red]")
+            console.print(f"  [bold red]fail[/bold red]  {title} (timed out)")
             return True, True
         except (OSError, subprocess.SubprocessError) as exc:
-            console.print(f"[red]{title} failed to start: {exc}.[/red]")
+            console.print(f"  [bold red]fail[/bold red]  {title} (failed to start: {exc})")
             return True, False
 
+        stderr_output = (getattr(completed, "stderr", "") or "").strip()
+        stdout_output = (getattr(completed, "stdout", "") or "").strip()
+        combined_output = f"{stdout_output}\n{stderr_output}".strip()
+        is_net_failure = _is_mirror_failure(combined_output)
+
         if completed.returncode != 0:
-            stderr_output = (completed.stderr or "").strip()
-            is_net_failure = _is_mirror_failure(stderr_output)
-            console.print(f"[red]{title} failed (exit={completed.returncode}).[/red]")
-            if stderr_output:
-                console.print(f"[red]{stderr_output}[/red]")
+            console.print(f"  [bold red]fail[/bold red]  {title} (exit={completed.returncode})")
+            error_text = stderr_output if stderr_output else stdout_output
+            if error_text:
+                error_lines = [line.rstrip() for line in error_text.splitlines() if line.strip()]
+                if len(error_lines) > 10:
+                    omitted = len(error_lines) - 10
+                    console.print(f"        [dim]│ ... ({omitted} lines omitted)[/dim]")
+                    error_lines = error_lines[-10:]
+                for err_line in error_lines:
+                    console.print(f"        [dim]│[/dim] [red]{err_line}[/red]")
             return True, is_net_failure
+
+        console.print(f"  [green]done[/green]  {title}")
         return False, False
 
 
