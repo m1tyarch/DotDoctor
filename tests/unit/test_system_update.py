@@ -851,9 +851,10 @@ def test_run_step_success_formatting(monkeypatch) -> None:
         lambda *a, **kw: SimpleNamespace(returncode=0, stderr="", stdout=""),
     )
 
-    had_error, is_net_fail = service._run_step(["test"], console, "Test Step")
+    had_error, is_net_fail, had_updates = service._run_step(["test"], console, "Test Step")
     assert had_error is False
     assert is_net_fail is False
+    assert had_updates is False
     assert any("DONE" in msg and "Test Step" in msg for msg in console.messages)
 
 
@@ -870,9 +871,10 @@ def test_run_step_failure_reveals_error_lines(monkeypatch) -> None:
         ),
     )
 
-    had_error, is_net_fail = service._run_step(["test"], console, "Test Step")
+    had_error, is_net_fail, had_updates = service._run_step(["test"], console, "Test Step")
     assert had_error is True
     assert is_net_fail is False
+    assert had_updates is False
     assert any("FAIL" in msg and "Test Step" in msg for msg in console.messages)
     assert any("error: file conflict" in msg for msg in console.messages)
     assert any("│" in msg for msg in console.messages)
@@ -886,18 +888,20 @@ def test_run_step_timeout_and_oserror(monkeypatch) -> None:
         raise subprocess.TimeoutExpired(cmd=["test"], timeout=1)
 
     monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", raise_timeout)
-    had_error, is_net_fail = service._run_step(["test"], console, "Timeout Step")
+    had_error, is_net_fail, had_updates = service._run_step(["test"], console, "Timeout Step")
     assert had_error is True
     assert is_net_fail is True
+    assert had_updates is False
     assert any("timed out" in msg for msg in console.messages)
 
     def raise_oserror(*a, **kw):
         raise OSError("binary not found")
 
     monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", raise_oserror)
-    had_error, is_net_fail = service._run_step(["test"], console, "Error Step")
+    had_error, is_net_fail, had_updates = service._run_step(["test"], console, "Error Step")
     assert had_error is True
     assert is_net_fail is False
+    assert had_updates is False
     assert any("failed to start" in msg for msg in console.messages)
 
 
@@ -938,6 +942,7 @@ def test_system_upgrade_console_layout_and_no_ansi_no_color(
     assert "  DONE  Firmware update" in rendered
     # Final summary in scan format
     assert "6 done · 2 skipped" in rendered
+    assert "Nothing to update. All packages and components are up to date." in rendered
 
 
 def test_system_upgrade_summary_counters_on_failure(
@@ -972,3 +977,97 @@ def test_system_upgrade_summary_counters_on_failure(
     assert "  FAIL  System and AUR update (yay) (exit=1)" in rendered
     assert "fatal package conflict" in rendered
     assert "1 failed" in rendered
+
+
+def test_system_upgrade_with_actual_updates_applied(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    service = SystemUpgradeService()
+    output = io.StringIO()
+    console = Console(file=output, width=80, no_color=True)
+
+    def fake_which(name: str) -> str | None:
+        if name in {"yay"}:
+            return f"/usr/bin/{name}"
+        return None
+
+    def fake_run(*args, **kwargs):
+        command = args[0]
+        if command == ["sudo", "true"]:
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+        if command[:1] == ["yay"]:
+            stdout = (
+                "Packages (2) linux-6.10.arch1-1 systemd-256-1\n" "Total Installed Size: 150 MiB\n"
+            )
+            return SimpleNamespace(returncode=0, stderr="", stdout=stdout)
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", fake_which)
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run)
+
+    code = service.run(_context(tmp_path), console)
+    assert code == 0
+
+    rendered = output.getvalue()
+    assert "1 done · 4 skipped" in rendered
+    assert "All updates completed successfully." in rendered
+    assert "Nothing to update" not in rendered
+
+
+def test_detect_step_updates_variants() -> None:
+    from dotdoctor.application.system_update import _detect_step_updates
+
+    # Package manager
+    assert not _detect_step_updates(["yay", "-Syu"], " there is nothing to do\n", "")
+    assert not _detect_step_updates(
+        ["sudo", "pacman", "-Syu"], ":: Synchronizing...\nthere is nothing to do", ""
+    )
+    assert _detect_step_updates(
+        ["yay", "-Syu"], "Packages (2) pkg-a pkg-b\nTotal Installed Size: 10 MiB\n", ""
+    )
+
+    # Flatpak
+    assert not _detect_step_updates(
+        ["flatpak", "update", "-y"], "Looking for updates...\nNothing to update.\n", ""
+    )
+    assert not _detect_step_updates(["flatpak", "update", "-y"], "Nothing to do.\n", "")
+    assert _detect_step_updates(
+        ["flatpak", "update", "-y"], "Updating runtime org.gnome.Platform\n", ""
+    )
+
+    # Flatpak unused
+    assert not _detect_step_updates(
+        ["flatpak", "uninstall", "--unused", "-y"], "Nothing unused to uninstall\n", ""
+    )
+    assert _detect_step_updates(
+        ["flatpak", "uninstall", "--unused", "-y"], "Uninstalling org.freedesktop.Platform\n", ""
+    )
+
+    # Paccache
+    assert not _detect_step_updates(
+        ["sudo", "paccache", "-rk2"], "==> finished: 0 packages removed\n", ""
+    )
+    assert not _detect_step_updates(
+        ["sudo", "paccache", "-rk2"], "==> no candidate packages found for pruning\n", ""
+    )
+    assert _detect_step_updates(
+        ["sudo", "paccache", "-rk2"], "==> finished: 12 packages removed\n", ""
+    )
+
+    # Oh-My-Zsh
+    assert not _detect_step_updates(
+        ["sh", "upgrade.sh"], "Oh My Zsh is already at the latest version.\n", ""
+    )
+    assert _detect_step_updates(["sh", "upgrade.sh"], "Updating Oh My Zsh\n", "")
+
+    # fwupdmgr
+    assert not _detect_step_updates(["fwupdmgr", "update", "-y"], "No updates available\n", "")
+    assert not _detect_step_updates(
+        ["fwupdmgr", "update", "-y"],
+        "Devices with no available firmware updates:\n • Device A\n",
+        "",
+    )
+    assert _detect_step_updates(
+        ["fwupdmgr", "update", "-y"], "Updating Device A...\nSuccessfully installed\n", ""
+    )

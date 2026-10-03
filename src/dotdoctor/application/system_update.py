@@ -1012,6 +1012,77 @@ def _is_mirror_failure(output: str) -> bool:
     return any(pattern in lowered for pattern in _NETWORK_FAILURE_PATTERNS)
 
 
+def _detect_step_updates(command: list[str], stdout: str, stderr: str) -> bool:
+    """Detect whether a maintenance step actually applied updates or changes."""
+    cmd_str = " ".join(command).lower()
+    combined = f"{stdout}\n{stderr}".lower()
+
+    if any(helper in cmd_str for helper in ("yay", "paru", "pacman")) and any(
+        arg in cmd_str for arg in ("-syu", "-u")
+    ):
+        if "there is nothing to do" in combined or "nothing to do" in combined:
+            return False
+        if any(
+            marker in combined
+            for marker in ("total installed size", "upgraded", "packages (", "installing")
+        ):
+            return True
+        return "there is nothing to do" not in combined and len(stdout.strip()) > 0
+
+    if "flatpak" in cmd_str and "update" in cmd_str:
+        if any(
+            marker in combined
+            for marker in ("nothing to do", "nothing to update", "nothing to install")
+        ):
+            return False
+        if any(marker in combined for marker in ("updating", "installing", "changes:")):
+            return True
+        return (
+            not any(marker in combined for marker in ("nothing to do", "nothing to update"))
+            and len(stdout.strip()) > 0
+        )
+
+    if "flatpak" in cmd_str and "unused" in cmd_str:
+        if "nothing unused to uninstall" in combined:
+            return False
+        if "uninstalling" in combined:
+            return True
+        return False
+
+    if "paccache" in cmd_str:
+        if "no candidate packages" in combined or "0 packages removed" in combined:
+            return False
+        match = re.search(r"(\d+)\s+packages removed", combined)
+        if match and int(match.group(1)) > 0:
+            return True
+        return False
+
+    if "upgrade.sh" in cmd_str:
+        if "already at the latest version" in combined:
+            return False
+        if "updating oh my zsh" in combined or "upgraded" in combined:
+            return True
+        return False
+
+    if "fwupdmgr" in cmd_str and "update" in cmd_str:
+        no_update_markers = (
+            "no updates available",
+            "devices with no available firmware updates",
+            "no updatable devices",
+            "nothing to do",
+            "devices with the latest available firmware version",
+        )
+        if any(marker in combined for marker in no_update_markers) and not any(
+            marker in combined for marker in ("successfully installed", "updating")
+        ):
+            return False
+        if "successfully installed" in combined or "updating" in combined:
+            return True
+        return False
+
+    return False
+
+
 def _resolve_oh_my_zsh_path(context: ScanContext) -> str | None:
     zsh_env = os.environ.get("ZSH")
     if zsh_env:
@@ -1086,6 +1157,7 @@ class SystemUpgradeService:
             return 3
 
         had_error = False
+        any_updates = False
         done_count = 0
         fail_count = 0
         skip_count = 0
@@ -1124,7 +1196,9 @@ class SystemUpgradeService:
             update_title = "System update (pacman)"
 
         if update_cmd is not None:
-            aur_error, is_net_failure = self._run_step(update_cmd, console, update_title)
+            aur_error, is_net_failure, aur_updated = self._run_step(
+                update_cmd, console, update_title
+            )
             if aur_error and is_net_failure:
                 console.print(
                     "[yellow]Mirror or network failure detected. "
@@ -1136,7 +1210,7 @@ class SystemUpgradeService:
                         "[red]FAIL: Mirror recovery failed. Package upgrade aborted.[/red]"
                     )
                     return 1
-                retry_error, _ = self._run_step(
+                retry_error, _, retry_updated = self._run_step(
                     update_cmd,
                     console,
                     f"{update_title} (retry after mirror recovery)",
@@ -1149,11 +1223,15 @@ class SystemUpgradeService:
                     )
                     return 1
                 done_count += 1
+                if retry_updated:
+                    any_updates = True
             elif aur_error:
                 had_error = True
                 fail_count += 1
             else:
                 done_count += 1
+                if aur_updated:
+                    any_updates = True
         else:
             for line_text in format_status_line(
                 STATUS_SKIP,
@@ -1165,7 +1243,7 @@ class SystemUpgradeService:
             skip_count += 1
 
         if shutil.which("flatpak") is not None:
-            flatpak_error, _ = self._run_step(
+            flatpak_error, _, flatpak_updated = self._run_step(
                 ["flatpak", "update", "-y"], console, "Flatpak update"
             )
             had_error |= flatpak_error
@@ -1173,8 +1251,10 @@ class SystemUpgradeService:
                 fail_count += 1
             else:
                 done_count += 1
+                if flatpak_updated:
+                    any_updates = True
 
-            unused_error, _ = self._run_step(
+            unused_error, _, unused_updated = self._run_step(
                 ["flatpak", "uninstall", "--unused", "-y"],
                 console,
                 "Flatpak cleanup (unused runtimes)",
@@ -1184,6 +1264,8 @@ class SystemUpgradeService:
                 fail_count += 1
             else:
                 done_count += 1
+                if unused_updated:
+                    any_updates = True
         else:
             for line_text in format_status_line(
                 STATUS_SKIP,
@@ -1195,7 +1277,7 @@ class SystemUpgradeService:
             skip_count += 1
 
         if shutil.which("paccache") is not None:
-            cache_error, _ = self._run_step(
+            cache_error, _, cache_updated = self._run_step(
                 ["sudo", "paccache", "-rk2"],
                 console,
                 "Pacman cache cleanup (keep 2 versions)",
@@ -1205,8 +1287,10 @@ class SystemUpgradeService:
                 fail_count += 1
             else:
                 done_count += 1
+                if cache_updated:
+                    any_updates = True
 
-            uninstalled_error, _ = self._run_step(
+            uninstalled_error, _, uninstalled_updated = self._run_step(
                 ["sudo", "paccache", "-ruk0"],
                 console,
                 "Pacman cache cleanup (uninstalled packages)",
@@ -1216,10 +1300,12 @@ class SystemUpgradeService:
                 fail_count += 1
             else:
                 done_count += 1
+                if uninstalled_updated:
+                    any_updates = True
 
         omz_upgrade = context.home / ".oh-my-zsh" / "tools" / "upgrade.sh"
         if omz_upgrade.exists():
-            omz_error, _ = self._run_step(
+            omz_error, _, omz_updated = self._run_step(
                 ["sh", str(omz_upgrade)],
                 console,
                 "Oh-My-Zsh update",
@@ -1229,6 +1315,8 @@ class SystemUpgradeService:
                 fail_count += 1
             else:
                 done_count += 1
+                if omz_updated:
+                    any_updates = True
         else:
             for line_text in format_status_line(
                 STATUS_SKIP,
@@ -1240,12 +1328,16 @@ class SystemUpgradeService:
             skip_count += 1
 
         if shutil.which("fwupdmgr") is not None:
-            fw_error, _ = self._run_step(["fwupdmgr", "update", "-y"], console, "Firmware update")
+            fw_error, _, fw_updated = self._run_step(
+                ["fwupdmgr", "update", "-y"], console, "Firmware update"
+            )
             had_error |= fw_error
             if fw_error:
                 fail_count += 1
             else:
                 done_count += 1
+                if fw_updated:
+                    any_updates = True
         else:
             for line_text in format_status_line(
                 STATUS_SKIP,
@@ -1270,6 +1362,13 @@ class SystemUpgradeService:
 
         console.print()
         console.print(format_sysup_summary(done=done_count, failed=fail_count, skipped=skip_count))
+        if not had_error:
+            if not any_updates:
+                console.print(
+                    "[dim]Nothing to update. All packages and components are up to date.[/dim]"
+                )
+            else:
+                console.print("[dim]All updates completed successfully.[/dim]")
 
         reboot_status = detect_reboot_status()
         if reboot_status.required:
@@ -1282,7 +1381,7 @@ class SystemUpgradeService:
     def _refresh_mirrors(self, console: Console) -> tuple[bool, str]:
         console_width = getattr(console, "width", 80) or 80
         if shutil.which("cachyos-rate-mirrors") is not None:
-            had_error, _ = self._run_step(
+            had_error, _, _ = self._run_step(
                 ["sudo", "cachyos-rate-mirrors"],
                 console,
                 "Mirror refresh",
@@ -1290,7 +1389,7 @@ class SystemUpgradeService:
             return had_error, "fail" if had_error else "done"
 
         if shutil.which("reflector") is not None:
-            had_error, _ = self._run_step(
+            had_error, _, _ = self._run_step(
                 [
                     "sudo",
                     "reflector",
@@ -1317,7 +1416,9 @@ class SystemUpgradeService:
             console.print(line_text)
         return False, "skip"
 
-    def _run_step(self, command: list[str], console: Console, title: str) -> tuple[bool, bool]:
+    def _run_step(
+        self, command: list[str], console: Console, title: str
+    ) -> tuple[bool, bool, bool]:
         console_width = getattr(console, "width", 80) or 80
         is_interactive = (
             bool(getattr(console, "is_terminal", False))
@@ -1352,13 +1453,13 @@ class SystemUpgradeService:
                 STATUS_FAIL, title, detail="(timed out)", width=console_width
             ):
                 console.print(line_text)
-            return True, True
+            return True, True, False
         except (OSError, subprocess.SubprocessError) as exc:
             for line_text in format_status_line(
                 STATUS_FAIL, title, detail=f"(failed to start: {exc})", width=console_width
             ):
                 console.print(line_text)
-            return True, False
+            return True, False, False
 
         stderr_output = (getattr(completed, "stderr", "") or "").strip()
         stdout_output = (getattr(completed, "stdout", "") or "").strip()
@@ -1387,11 +1488,12 @@ class SystemUpgradeService:
                     for i, w in enumerate(wrapped_err):
                         p = prefix if i == 0 else "          "
                         console.print(f"[dim]{p}{w}[/dim]")
-            return True, is_net_failure
+            return True, is_net_failure, False
 
+        had_updates = _detect_step_updates(command, stdout_output, stderr_output)
         for line_text in format_status_line(STATUS_DONE, title, width=console_width):
             console.print(line_text)
-        return False, False
+        return False, False, had_updates
 
 
 def _parse_fwupdmgr_updates(output: str) -> int:
