@@ -1,4 +1,6 @@
+import os
 import textwrap
+import time
 
 from rich.console import Console
 from rich.layout import Layout
@@ -6,6 +8,15 @@ from rich.table import Table
 from rich.text import Text
 
 from dotdoctor.domain.models import CheckResult, ScanReport, Severity
+
+DEFAULT_ANIMATION_DELAY = 0.025
+
+
+def _sleep(seconds: float) -> None:
+    try:
+        time.sleep(seconds)
+    except KeyboardInterrupt:
+        pass
 
 
 def _status_label(severity: Severity) -> str:
@@ -67,7 +78,12 @@ def _wrap_text(text: str, width: int) -> list[str]:
     return lines or [""]
 
 
-def render_terminal_report(report: ScanReport, console: Console) -> None:
+def render_terminal_report(
+    report: ScanReport,
+    console: Console,
+    animate: bool | None = None,
+    delay: float = DEFAULT_ANIMATION_DELAY,
+) -> None:
     header = Text("DotDoctor \u00b7 ")
     header.append(report.profile, style="dim")
     console.print(header)
@@ -76,6 +92,17 @@ def render_terminal_report(report: ScanReport, console: Console) -> None:
     if not report.results:
         console.print(format_summary(report.summary))
         return
+
+    should_animate = (
+        animate
+        if animate is not None
+        else (
+            console.is_terminal
+            and not console.is_dumb_terminal
+            and not os.environ.get("NO_ANIMATION")
+            and not os.environ.get("DOTDOCTOR_NO_ANIMATION")
+        )
+    )
 
     max_status_len = max((len(_status_label(r.severity)) for r in report.results), default=4)
     max_id_len = max((len(r.check_id) for r in report.results), default=0)
@@ -101,11 +128,15 @@ def render_terminal_report(report: ScanReport, console: Console) -> None:
         line1.append("  ")
         line1.append(msg_lines[0], style=msg_style)
         console.print(line1)
+        if should_animate:
+            _sleep(delay)
 
         for extra_line in msg_lines[1:]:
             cont_line = Text(indent_spaces)
             cont_line.append(extra_line, style=msg_style)
             console.print(cont_line)
+            if should_animate:
+                _sleep(delay)
 
         if result.severity != Severity.PASS and result.remediation:
             fix_text = f"fix: {result.remediation}"
@@ -114,8 +145,12 @@ def render_terminal_report(report: ScanReport, console: Console) -> None:
                 f_line = Text(indent_spaces)
                 f_line.append(fix_line, style="dim")
                 console.print(f_line)
+                if should_animate:
+                    _sleep(delay)
 
     console.print()
+    if should_animate:
+        _sleep(delay)
     console.print(format_summary(report.summary))
 
 

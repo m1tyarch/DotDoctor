@@ -288,3 +288,71 @@ def test_legacy_check_id_normalization_and_resolution() -> None:
     assert report.get_result("sys.packages") is not None
     assert report.get_result("sys:packages") is not None
     assert report.get_result("sys:packages").message == "ok"
+
+
+def test_render_terminal_report_animation_enabled(monkeypatch) -> None:
+    output = io.StringIO()
+    console = Console(file=output, width=80, color_system=None)
+
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(check_id="sys.packages", severity=Severity.PASS, message="ok"),
+            CheckResult(
+                check_id="sys.orphans",
+                severity=Severity.WARN,
+                message="1 orphan",
+                remediation="clean it",
+            ),
+        ],
+        summary={"PASS": 1, "OUTD": 0, "WARN": 1, "FAIL": 0},
+    )
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("dotdoctor.cli.render._sleep", lambda sec: sleeps.append(sec))
+
+    render_terminal_report(report, console, animate=True, delay=0.01)
+
+    assert len(sleeps) == 4
+    assert all(s == 0.01 for s in sleeps)
+
+
+def test_render_terminal_report_animation_disabled_by_default_non_terminal(monkeypatch) -> None:
+    output = io.StringIO()
+    console = Console(file=output, width=80, color_system=None)
+    assert not console.is_terminal
+
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(check_id="sys.packages", severity=Severity.PASS, message="ok"),
+        ],
+        summary={"PASS": 1, "OUTD": 0, "WARN": 0, "FAIL": 0},
+    )
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("dotdoctor.cli.render._sleep", lambda sec: sleeps.append(sec))
+
+    render_terminal_report(report, console)
+    assert len(sleeps) == 0
+
+
+def test_render_terminal_report_animation_disabled_by_env(monkeypatch) -> None:
+    output = io.StringIO()
+    console = Console(file=output, width=80, color_system=None)
+    monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
+    monkeypatch.setenv("NO_ANIMATION", "1")
+
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(check_id="sys.packages", severity=Severity.PASS, message="ok"),
+        ],
+        summary={"PASS": 1, "OUTD": 0, "WARN": 0, "FAIL": 0},
+    )
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("dotdoctor.cli.render._sleep", lambda sec: sleeps.append(sec))
+
+    render_terminal_report(report, console)
+    assert len(sleeps) == 0
