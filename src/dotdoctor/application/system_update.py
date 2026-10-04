@@ -5,13 +5,18 @@ import shutil
 import socket
 import subprocess
 import textwrap
+import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 from rich.console import Console
 from rich.live import Live
+from rich.markup import escape
 from rich.spinner import Spinner
 from rich.table import Table
 
@@ -27,6 +32,8 @@ from dotdoctor.cli.theme import (
 )
 from dotdoctor.domain.context import ScanContext
 from dotdoctor.domain.models import CheckResult, ScanReport, Severity
+
+_ORIGINAL_SUBPROCESS_RUN = subprocess.run
 
 
 def is_online(
@@ -271,12 +278,32 @@ class SystemDryRunService:
         self._is_online_fn = is_online_fn
         self._aur_helper_fn = aur_helper_fn
 
-    def build_tasks(self, context: ScanContext) -> list[SystemCheckTask]:
+    def build_tasks(
+        self,
+        context: ScanContext,
+        disabled_checks: set[str] | list[str] | None = None,
+    ) -> list[SystemCheckTask]:
         tasks: list[SystemCheckTask] = []
+        disabled: set[str] = set(disabled_checks or [])
+        env_disabled = os.environ.get("DOTDOCTOR_DISABLE_CHECKS", "")
+        if env_disabled:
+            disabled.update(item.strip() for item in env_disabled.split(",") if item.strip())
+
+        def _is_disabled(cid: str) -> bool:
+            return (
+                cid in disabled
+                or cid.replace(".", ":") in disabled
+                or cid.replace(":", ".") in disabled
+            )
+
+        def _add_task(task: SystemCheckTask) -> None:
+            if not _is_disabled(task.check_id):
+                tasks.append(task)
+
         online = self._is_online_fn()
 
         if not online:
-            tasks.append(
+            _add_task(
                 SystemCheckTask(
                     check_id="sys.network",
                     label="Network connection",
@@ -289,7 +316,7 @@ class SystemDryRunService:
                 )
             )
         else:
-            tasks.append(
+            _add_task(
                 SystemCheckTask(
                     check_id="sys.packages",
                     label="Packages",
@@ -299,7 +326,7 @@ class SystemDryRunService:
 
             aur_helper = self._aur_helper_fn()
             if aur_helper is not None:
-                tasks.append(
+                _add_task(
                     SystemCheckTask(
                         check_id="sys.aur",
                         label=f"AUR ({aur_helper})",
@@ -308,14 +335,14 @@ class SystemDryRunService:
                 )
 
             if shutil.which("flatpak") is not None:
-                tasks.append(
+                _add_task(
                     SystemCheckTask(
                         check_id="sys.flatpak",
                         label="Flatpak packages",
                         runner=lambda: self._check_flatpak(context),
                     )
                 )
-                tasks.append(
+                _add_task(
                     SystemCheckTask(
                         check_id="sys.flatpak-unused",
                         label="Unused Flatpaks",
@@ -323,7 +350,7 @@ class SystemDryRunService:
                     )
                 )
 
-            tasks.append(
+            _add_task(
                 SystemCheckTask(
                     check_id="sys.firmware",
                     label="Firmware updates",
@@ -333,7 +360,7 @@ class SystemDryRunService:
 
             omz_path = _resolve_oh_my_zsh_path(context)
             if omz_path is not None:
-                tasks.append(
+                _add_task(
                     SystemCheckTask(
                         check_id="sys.shell-omz",
                         label="Oh-My-Zsh updates",
@@ -341,14 +368,14 @@ class SystemDryRunService:
                     )
                 )
 
-        tasks.append(
+        _add_task(
             SystemCheckTask(
                 check_id="sys.reboot",
                 label="Reboot status",
                 runner=lambda: self._check_reboot(context),
             )
         )
-        tasks.append(
+        _add_task(
             SystemCheckTask(
                 check_id="sys.disk",
                 label="Disk space",
@@ -357,7 +384,7 @@ class SystemDryRunService:
         )
 
         if shutil.which("pacman") is not None:
-            tasks.append(
+            _add_task(
                 SystemCheckTask(
                     check_id="sys.orphans",
                     label="Orphan packages",
@@ -366,7 +393,7 @@ class SystemDryRunService:
             )
 
         if shutil.which("pacman") is not None or shutil.which("paccache") is not None:
-            tasks.append(
+            _add_task(
                 SystemCheckTask(
                     check_id="sys.cache",
                     label="Pacman cache",
@@ -375,7 +402,7 @@ class SystemDryRunService:
             )
 
         if shutil.which("pacdiff") is not None or shutil.which("pacman") is not None:
-            tasks.append(
+            _add_task(
                 SystemCheckTask(
                     check_id="sys.pacnew",
                     label=".pacnew files",
@@ -384,7 +411,7 @@ class SystemDryRunService:
             )
 
         if shutil.which("systemctl") is not None:
-            tasks.append(
+            _add_task(
                 SystemCheckTask(
                     check_id="sys.services",
                     label="Failed services",
@@ -393,7 +420,7 @@ class SystemDryRunService:
             )
 
         if shutil.which("journalctl") is not None:
-            tasks.append(
+            _add_task(
                 SystemCheckTask(
                     check_id="sys.journal",
                     label="Journal disk usage",
@@ -403,17 +430,27 @@ class SystemDryRunService:
 
         return tasks
 
-    def run(self, context: ScanContext) -> ScanReport:
-        tasks = self.build_tasks(context)
-        results = self._run_tasks(tasks, on_task_complete=None)
-        return ScanReport(profile=context.profile, results=results)
+    def run(
+        self,
+        context: ScanContext,
+        disabled_checks: set[str] | list[str] | None = None,
+    ) -> ScanReport:
+        try:
+            if disabled_checks:
+                return self.run_with_progress(
+                    context, on_task_complete=None, disabled_checks=disabled_checks
+                )
+            return self.run_with_progress(context, on_task_complete=None)
+        except TypeError:
+            return self.run_with_progress(context)
 
     def run_with_progress(
         self,
         context: ScanContext,
         on_task_complete: Callable[[str], None] | None = None,
+        disabled_checks: set[str] | list[str] | None = None,
     ) -> ScanReport:
-        tasks = self.build_tasks(context)
+        tasks = self.build_tasks(context, disabled_checks=disabled_checks)
         results = self._run_tasks(tasks, on_task_complete=on_task_complete)
         return ScanReport(profile=context.profile, results=results)
 
@@ -431,13 +468,19 @@ class SystemDryRunService:
                 pool.submit(task.runner): task for task in tasks
             }
             pending = set(futures.keys())
-            while pending:
-                done, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
-                for future in done:
-                    task = futures[future]
-                    ordered_results[task.check_id] = future.result()
-                    if on_task_complete is not None:
-                        on_task_complete(task.check_id)
+            try:
+                while pending:
+                    done, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        task = futures[future]
+                        ordered_results[task.check_id] = future.result()
+                        if on_task_complete is not None:
+                            on_task_complete(task.check_id)
+            except KeyboardInterrupt:
+                for f in pending:
+                    f.cancel()
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
 
         collected_results: list[CheckResult] = []
         for task in tasks:
@@ -448,11 +491,18 @@ class SystemDryRunService:
 
     def _check_arch_packages(self, context: ScanContext) -> CheckResult:
         if shutil.which("checkupdates") is None:
+            if shutil.which("pacman") is None:
+                return CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.PASS,
+                    message="pacman not installed",
+                    remediation=None,
+                )
             return CheckResult(
                 check_id="sys.packages",
-                severity=Severity.PASS,
+                severity=Severity.WARN,
                 message="checkupdates not installed",
-                remediation=None,
+                remediation="sudo pacman -S pacman-contrib",
             )
 
         result = _run_capture(["checkupdates"], timeout=60)
@@ -468,7 +518,7 @@ class SystemDryRunService:
                 check_id="sys.packages",
                 severity=Severity.WARN,
                 message="could not run checkupdates",
-                remediation="run checkupdates manually to inspect error",
+                remediation="checkupdates",
             )
         completed = result.completed
         lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
@@ -480,7 +530,7 @@ class SystemDryRunService:
                 check_id="sys.packages",
                 severity=Severity.FAIL,
                 message="package check failed",
-                remediation="verify mirror availability and run pacman -Sy",
+                remediation="pacman -Sy",
             )
 
         pkg_entries: list[str] = []
@@ -511,7 +561,7 @@ class SystemDryRunService:
             check_id="sys.packages",
             severity=Severity.OUTD,
             message=msg,
-            remediation="run dotdoctor --sysup to apply updates",
+            remediation="dotdoctor --sysup",
             details={
                 "updates": count,
                 "packages": pkg_entries,
@@ -541,7 +591,7 @@ class SystemDryRunService:
                 check_id="sys.flatpak",
                 severity=Severity.WARN,
                 message="could not run Flatpak check",
-                remediation="run flatpak remote-ls --updates manually",
+                remediation="flatpak remote-ls --updates",
             )
         if result.completed.returncode != 0:
             return CheckResult(
@@ -560,7 +610,7 @@ class SystemDryRunService:
             check_id="sys.flatpak",
             severity=Severity.OUTD,
             message=f"{count} {noun} available",
-            remediation="run dotdoctor --sysup to apply updates",
+            remediation="dotdoctor --sysup",
             details={"updates": count, "packages": lines},
         )
 
@@ -586,7 +636,7 @@ class SystemDryRunService:
                 check_id="sys.firmware",
                 severity=Severity.WARN,
                 message="could not refresh firmware metadata",
-                remediation="run fwupdmgr refresh manually",
+                remediation="fwupdmgr refresh",
             )
 
         updates_result = _run_capture(["fwupdmgr", "get-updates"], timeout=90)
@@ -602,7 +652,7 @@ class SystemDryRunService:
                 check_id="sys.firmware",
                 severity=Severity.WARN,
                 message="could not run firmware update check",
-                remediation="run fwupdmgr get-updates manually",
+                remediation="fwupdmgr get-updates",
             )
         completed = updates_result.completed
 
@@ -621,7 +671,7 @@ class SystemDryRunService:
                 check_id="sys.firmware",
                 severity=Severity.WARN,
                 message="firmware check returned unexpected exit code",
-                remediation="run fwupdmgr get-updates manually and inspect output",
+                remediation="fwupdmgr get-updates",
             )
 
         if update_count == 0:
@@ -642,7 +692,7 @@ class SystemDryRunService:
                 check_id="sys.shell-omz",
                 severity=Severity.OUTD,
                 message=f"{update_count} update{'s' if update_count != 1 else ''} available",
-                remediation="run dotdoctor --sysup to apply updates",
+                remediation="dotdoctor --sysup",
                 details={"updates": update_count},
             )
 
@@ -662,7 +712,7 @@ class SystemDryRunService:
                 check_id="sys.reboot",
                 severity=Severity.WARN,
                 message=f"reboot required: {reason}",
-                remediation="reboot system to load new kernel or packages",
+                remediation="systemctl reboot",
                 details={
                     "running_kernel": status.running_kernel,
                     "installed_kernels": status.installed_kernels,
@@ -709,7 +759,7 @@ class SystemDryRunService:
                 check_id="sys.aur",
                 severity=Severity.WARN,
                 message=f"could not run {aur_helper} -Qua",
-                remediation=f"run {aur_helper} -Qua manually",
+                remediation=f"{aur_helper} -Qua",
             )
         lines = [line.strip() for line in result.completed.stdout.splitlines() if line.strip()]
         flagged = [line for line in lines if _AUR_FLAGGED_RE.search(line)]
@@ -753,7 +803,7 @@ class SystemDryRunService:
             check_id="sys.aur",
             severity=Severity.OUTD,
             message=msg,
-            remediation="run dotdoctor --sysup to apply updates",
+            remediation="dotdoctor --sysup",
             details={
                 "updates": len(regular),
                 "flagged": len(flagged),
@@ -804,7 +854,7 @@ class SystemDryRunService:
                 check_id="sys.cache",
                 severity=Severity.WARN,
                 message=f"{total_str} in pacman cache ({saved_str} reclaimable)",
-                remediation="run sudo paccache -rk2",
+                remediation="sudo paccache -rk2",
                 details={"total_bytes": total_bytes, "candidates": candidates, "saved": saved_str},
             )
 
@@ -813,7 +863,7 @@ class SystemDryRunService:
                 check_id="sys.cache",
                 severity=Severity.WARN,
                 message=f"{total_str} in pacman cache",
-                remediation="run sudo paccache -rk2",
+                remediation="sudo paccache -rk2",
                 details={"total_bytes": total_bytes},
             )
 
@@ -840,14 +890,14 @@ class SystemDryRunService:
                 check_id="sys.orphans",
                 severity=Severity.WARN,
                 message="orphan check timed out",
-                remediation="run pacman -Qtdq manually",
+                remediation="pacman -Qtdq",
             )
         if result.completed is None or result.completed.returncode not in {0, 1}:
             return CheckResult(
                 check_id="sys.orphans",
                 severity=Severity.WARN,
                 message="could not check orphan packages",
-                remediation="run pacman -Qtdq manually",
+                remediation="pacman -Qtdq",
             )
 
         orphans = [line.strip() for line in result.completed.stdout.splitlines() if line.strip()]
@@ -858,7 +908,7 @@ class SystemDryRunService:
                 check_id="sys.orphans",
                 severity=Severity.WARN,
                 message=f"{count} orphan {noun} found",
-                remediation="run sudo pacman -Rns $(pacman -Qtdq)",
+                remediation="sudo pacman -Rns $(pacman -Qtdq)",
                 details={"orphans": orphans},
             )
 
@@ -880,7 +930,7 @@ class SystemDryRunService:
                 check_id="sys.pacnew",
                 severity=Severity.WARN,
                 message=f"{count} .pacnew {noun} found ({names})",
-                remediation="run pacdiff -s to merge configuration files",
+                remediation="pacdiff -s",
                 details={"files": files},
             )
 
@@ -931,7 +981,7 @@ class SystemDryRunService:
                 check_id="sys.services",
                 severity=Severity.FAIL,
                 message=f"{count} failed {noun} ({sample})",
-                remediation=f"run systemctl status {first_unit} to inspect",
+                remediation=f"systemctl status {first_unit}",
                 details={"failed_units": failed_units},
             )
 
@@ -975,7 +1025,7 @@ class SystemDryRunService:
                 check_id="sys.flatpak-unused",
                 severity=Severity.WARN,
                 message=f"{count} unused {noun} found",
-                remediation="run flatpak uninstall --unused",
+                remediation="flatpak uninstall --unused",
                 details={"unused_count": count},
             )
 
@@ -1018,7 +1068,7 @@ class SystemDryRunService:
                     check_id="sys.journal",
                     severity=Severity.WARN if is_large else Severity.PASS,
                     message=f"{size_str} in journal logs",
-                    remediation="run sudo journalctl --vacuum-size=1G" if is_large else None,
+                    remediation="sudo journalctl --vacuum-size=1G" if is_large else None,
                     details={"disk_usage": size_str},
                 )
 
@@ -1036,7 +1086,7 @@ def _result_for_count(check_id: str, updates: int) -> CheckResult:
             check_id=check_id,
             severity=Severity.OUTD,
             message=f"{updates} update{'s' if updates != 1 else ''} available",
-            remediation="run dotdoctor --sysup to apply updates",
+            remediation="dotdoctor --sysup",
             details={"updates": updates},
         )
 
@@ -1594,6 +1644,90 @@ class SystemUpgradeService:
             console.print(line_text)
         return False, "skip"
 
+    def _run_streaming_step(
+        self,
+        command: list[str],
+        console: Console,
+        title: str,
+        console_width: int,
+    ) -> SimpleNamespace:
+        proc = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            bufsize=1,
+        )
+
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        current_subline: list[str] = [""]
+        ansi_re = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+        def _read_stream(stream: Any, lines_buf: list[str], is_stdout: bool) -> None:
+            try:
+                for raw_line in iter(stream.readline, ""):
+                    lines_buf.append(raw_line)
+                    if is_stdout:
+                        cleaned = ansi_re.sub("", raw_line).strip()
+                        if cleaned:
+                            current_subline[0] = cleaned
+            except Exception:
+                pass
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+
+        t_out = threading.Thread(
+            target=_read_stream, args=(proc.stdout, stdout_lines, True), daemon=True
+        )
+        t_err = threading.Thread(
+            target=_read_stream, args=(proc.stderr, stderr_lines, False), daemon=True
+        )
+        t_out.start()
+        t_err.start()
+
+        def _build_grid(sub: str = "") -> Table:
+            grid = Table.grid(expand=False)
+            grid.add_column()
+            grid.add_column(width=STATUS_WIDTH)
+            grid.add_column()
+            grid.add_column()
+            grid.add_row(INDENT, Spinner("dots"), GAP, title)
+            if sub:
+                prefix_len = 2 + STATUS_WIDTH + 2 + 2
+                max_sub_len = max(10, console_width - prefix_len)
+                truncated = sub if len(sub) <= max_sub_len else sub[: max_sub_len - 1] + "…"
+                grid.add_row(INDENT, "", GAP, f"[dim]↳ {escape(truncated)}[/dim]")
+            return grid
+
+        try:
+            with Live(
+                _build_grid(), console=console, transient=True, refresh_per_second=10
+            ) as live:
+                while proc.poll() is None:
+                    sub = current_subline[0]
+                    live.update(_build_grid(sub))
+                    time.sleep(0.08)
+        except KeyboardInterrupt:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            raise
+
+        t_out.join(timeout=1.0)
+        t_err.join(timeout=1.0)
+        return SimpleNamespace(
+            returncode=proc.returncode if proc.returncode is not None else 1,
+            stdout="".join(stdout_lines),
+            stderr="".join(stderr_lines),
+        )
+
     def _run_step(
         self, command: list[str], console: Console, title: str
     ) -> tuple[bool, bool, bool]:
@@ -1604,21 +1738,14 @@ class SystemUpgradeService:
             and not os.environ.get("NO_ANIMATION")
             and not os.environ.get("DOTDOCTOR_NO_ANIMATION")
         )
+        completed: Any
         try:
-            if is_interactive and hasattr(console, "status"):
-                grid = Table.grid(expand=False)
-                grid.add_column()
-                grid.add_column(width=STATUS_WIDTH)
-                grid.add_column()
-                grid.add_column()
-                grid.add_row(INDENT, Spinner("dots"), GAP, title)
-                with Live(grid, console=console, transient=True, refresh_per_second=12.5):
-                    completed = subprocess.run(
-                        command,
-                        check=False,
-                        capture_output=True,
-                        text=True,
-                    )
+            if (
+                is_interactive
+                and hasattr(console, "status")
+                and subprocess.run is _ORIGINAL_SUBPROCESS_RUN
+            ):
+                completed = self._run_streaming_step(command, console, title, console_width)
             else:
                 completed = subprocess.run(
                     command,

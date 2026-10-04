@@ -1282,3 +1282,79 @@ def test_check_aur_packages_critical_detection(monkeypatch, tmp_path: Path) -> N
         "nvidia-dkms 555.58-1 -> 560.35-1",
         "spotify 1:1.2.42-1 -> 1:1.2.45-1",
     ]
+
+
+def test_check_arch_packages_warns_when_checkupdates_missing_but_pacman_present(
+    monkeypatch, tmp_path: Path
+) -> None:
+    service = SystemDryRunService()
+
+    def fake_which(name: str) -> str | None:
+        if name == "pacman":
+            return "/usr/bin/pacman"
+        return None
+
+    monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", fake_which)
+
+    result = service._check_arch_packages(_context(tmp_path))
+    assert result.severity is Severity.WARN
+    assert "checkupdates not installed" in result.message
+    assert result.remediation == "sudo pacman -S pacman-contrib"
+
+
+def test_system_dry_run_disabled_checks(monkeypatch, tmp_path: Path) -> None:
+    service = SystemDryRunService()
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.shutil.which", lambda n: f"/usr/bin/{n}"
+    )
+
+    tasks = service.build_tasks(_context(tmp_path), disabled_checks={"sys.packages", "sys.cache"})
+    task_ids = {t.check_id for t in tasks}
+    assert "sys.packages" not in task_ids
+    assert "sys.cache" not in task_ids
+    assert "sys.firmware" in task_ids
+
+
+def test_system_dry_run_disabled_checks_via_env(monkeypatch, tmp_path: Path) -> None:
+    service = SystemDryRunService()
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.shutil.which", lambda n: f"/usr/bin/{n}"
+    )
+    monkeypatch.setenv("DOTDOCTOR_DISABLE_CHECKS", "sys.packages, sys.cache")
+
+    tasks = service.build_tasks(_context(tmp_path))
+    task_ids = {t.check_id for t in tasks}
+    assert "sys.packages" not in task_ids
+    assert "sys.cache" not in task_ids
+
+
+def test_system_dry_run_remediations_have_no_run_prefix(monkeypatch, tmp_path: Path) -> None:
+    service = SystemDryRunService()
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.shutil.which", lambda n: f"/usr/bin/{n}"
+    )
+
+    def fake_run(*args, **kwargs):
+        return SimpleNamespace(returncode=0, stdout="test\n", stderr="")
+
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", fake_run)
+
+    report = service.run(_context(tmp_path))
+    for res in report.results:
+        if res.remediation:
+            assert not res.remediation.startswith("run "), f"Remediation '{res.remediation}'"
+            assert not res.remediation.startswith("Run "), f"Remediation '{res.remediation}'"
+
+
+def test_run_streaming_step() -> None:
+    service = SystemUpgradeService()
+    console = Console(file=io.StringIO(), force_terminal=True, width=80)
+    result = service._run_streaming_step(
+        ["python3", "-c", "import sys; sys.stdout.write('hello\\n'); sys.stderr.write('err\\n')"],
+        console=console,
+        title="Streaming test",
+        console_width=80,
+    )
+    assert result.returncode == 0
+    assert "hello" in result.stdout
+    assert "err" in result.stderr

@@ -498,3 +498,147 @@ def test_root_verbose_shows_all_packages(monkeypatch) -> None:
     assert result_verbose.exit_code == 0
     assert "• pkg4 1.0 -> 1.1" in result_verbose.stdout
     assert "use -v to show all" not in result_verbose.stdout
+
+
+def test_root_disable_check(monkeypatch) -> None:
+    captured_disabled = []
+
+    def fake_run(self, context, on_task_complete=None, disabled_checks=None):
+        captured_disabled.append(disabled_checks)
+        return ScanReport(profile="system", results=[])
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+
+    result = runner.invoke(app, ["--disable-check", "sys.cache"])
+    assert result.exit_code == 0
+    assert captured_disabled == [["sys.cache"]]
+
+
+def test_root_json_output(monkeypatch, tmp_path: Path) -> None:
+    def fake_run(self, context, on_task_complete=None):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.PASS,
+                    message="up to date",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+
+    out_file = tmp_path / "report.json"
+    result = runner.invoke(app, ["--json-output", str(out_file)])
+    assert result.exit_code == 0
+    assert out_file.exists()
+    assert '"sys.packages"' in out_file.read_text(encoding="utf-8")
+
+
+def test_scan_profile_system(monkeypatch, tmp_path: Path) -> None:
+    called = []
+
+    def fake_dry_run(fix_mode=False, verbose=False, json_output=None, disable_check=None):
+        called.append((fix_mode, verbose, json_output, disable_check))
+        import typer
+
+        raise typer.Exit(code=0)
+
+    monkeypatch.setattr("dotdoctor.cli.app._system_dry_run_impl", fake_dry_run)
+
+    result = runner.invoke(app, ["scan", "--profile", "system", "--disable-check", "sys.cache"])
+    assert result.exit_code == 0
+    assert len(called) == 1
+    assert called[0][3] == ["sys.cache"]
+
+
+def test_root_refreshes_report_after_sysup(monkeypatch) -> None:
+    call_count = [0]
+    fixed_applied = []
+
+    def fake_run_progress(self, context, on_task_complete=None):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.OUTD,
+                    message="1 update available",
+                ),
+                CheckResult(
+                    check_id="sys.cache",
+                    severity=Severity.WARN,
+                    message="cache needs cleaning",
+                ),
+            ],
+        )
+
+    def fake_upgrade(self, context, console):
+        return 0
+
+    def fake_run_refreshed(self, context, disabled_checks=None):
+        call_count[0] += 1
+        # Everything was resolved by upgrade!
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.PASS,
+                    message="up to date",
+                ),
+                CheckResult(
+                    check_id="sys.cache",
+                    severity=Severity.PASS,
+                    message="clean",
+                ),
+            ],
+        )
+
+    def fake_apply(self, report, context):
+        fixed_applied.append(True)
+        return report
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run_progress,
+    )
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run",
+        fake_run_refreshed,
+    )
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemUpgradeService.run",
+        fake_upgrade,
+    )
+    monkeypatch.setattr(
+        "dotdoctor.application.auto_fix.InteractiveAutoFixer.apply",
+        fake_apply,
+    )
+
+    result = runner.invoke(app, [], input="y\n")
+    assert result.exit_code == 0
+    assert call_count[0] == 1  # Re-evaluate report was called
+    assert fixed_applied == []  # Fix prompt was NOT asked because issues were resolved!
+
+
+def test_main_keyboard_interrupt_clean_exit(monkeypatch) -> None:
+    from dotdoctor import main
+
+    def fake_app():
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr("dotdoctor.cli.app.app", fake_app)
+
+    import pytest
+
+    with pytest.raises(SystemExit) as exc_info:
+        main.run()
+    assert exc_info.value.code == 130

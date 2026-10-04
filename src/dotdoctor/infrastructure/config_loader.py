@@ -14,7 +14,23 @@ class ConfigError(Exception):
 def load_config(config_path: Path | None = None) -> DotDoctorConfig:
     if config_path is None:
         env_path = os.environ.get("DOTDOCTOR_CONFIG")
-        config_path = Path(env_path) if env_path else Path("dotdoctor.yml")
+        if env_path:
+            config_path = Path(env_path)
+        else:
+            xdg_config = os.environ.get("XDG_CONFIG_HOME")
+            base_dir = Path(xdg_config) if xdg_config else Path.home() / ".config"
+            candidates = [
+                Path("dotdoctor.yml"),
+                Path("dotdoctor.yaml"),
+                base_dir / "dotdoctor" / "config.yml",
+                base_dir / "dotdoctor" / "config.yaml",
+            ]
+            for cand in candidates:
+                if cand.exists():
+                    config_path = cand
+                    break
+            if config_path is None:
+                config_path = Path("dotdoctor.yml")
 
     config = default_config()
 

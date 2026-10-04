@@ -1,5 +1,4 @@
 import os
-import time
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +14,7 @@ from typer._click import exceptions as _click_exceptions
 from dotdoctor.application.auto_fix import InteractiveAutoFixer
 from dotdoctor.application.system_update import SystemDryRunService, SystemUpgradeService
 from dotdoctor.application.use_cases import RunScanUseCase
-from dotdoctor.cli.render import build_live_dashboard, render_terminal_report
+from dotdoctor.cli.render import render_terminal_report
 from dotdoctor.cli.theme import (
     GAP,
     INDENT,
@@ -115,6 +114,8 @@ def root(
     sys: bool = SYS_OPTION,
     sysup: bool = SYSUP_OPTION,
     verbose: bool = VERBOSE_OPTION,
+    disable_check: list[str] = DISABLE_CHECK_OPTION,
+    json_output: Path | None = JSON_OUTPUT_OPTION,
 ) -> None:
     if ctx.invoked_subcommand is None:
         if env and (sys or sysup):
@@ -129,20 +130,20 @@ def root(
                 _scan_impl(
                     profile="python-dev",
                     config=None,
-                    disable_check=[],
-                    json_output=None,
+                    disable_check=disable_check,
+                    json_output=json_output,
                     ui=True,
                     fix=fix,
                     verbose=verbose,
                 )
             else:
                 _scan_impl(
-                    profile="python-dev",
-                    config=None,
-                    disable_check=[],
-                    json_output=None,
-                    ui=True,
-                    fix=fix,
+                    "python-dev",
+                    None,
+                    disable_check,
+                    json_output,
+                    True,
+                    fix,
                 )
             return
 
@@ -150,7 +151,12 @@ def root(
             _system_upgrade_impl()
             return
 
-        _system_dry_run_impl(fix_mode=fix, verbose=verbose)
+        _system_dry_run_impl(
+            fix_mode=fix,
+            verbose=verbose,
+            json_output=json_output,
+            disable_check=disable_check,
+        )
 
 
 @app.command("version")
@@ -182,6 +188,15 @@ def _scan_impl(
     fix: bool,
     verbose: bool = False,
 ) -> None:
+    if profile == "system":
+        _system_dry_run_impl(
+            fix_mode=fix,
+            verbose=verbose,
+            json_output=json_output,
+            disable_check=disable_check,
+        )
+        return
+
     console = Console()
 
     try:
@@ -232,7 +247,12 @@ def _safe_confirm(prompt: str, default: bool = True) -> bool:
         return False
 
 
-def _system_dry_run_impl(fix_mode: bool = False, verbose: bool = False) -> None:
+def _system_dry_run_impl(
+    fix_mode: bool = False,
+    verbose: bool = False,
+    json_output: Path | None = None,
+    disable_check: list[str] | None = None,
+) -> None:
     console = Console()
     context = ScanContext(
         profile="system",
@@ -245,7 +265,7 @@ def _system_dry_run_impl(fix_mode: bool = False, verbose: bool = False) -> None:
     console.print()
 
     service = SystemDryRunService()
-    tasks = service.build_tasks(context)
+    tasks = service.build_tasks(context, disabled_checks=disable_check)
 
     states: dict[str, str] = {task.check_id: "running" for task in tasks}
 
@@ -284,15 +304,27 @@ def _system_dry_run_impl(fix_mode: bool = False, verbose: bool = False) -> None:
                 states[check_id] = "done"
                 live.update(_build_steps_table())
 
-            report = service.run_with_progress(context, on_task_complete=_mark_done)
+            if disable_check:
+                report = service.run_with_progress(
+                    context, on_task_complete=_mark_done, disabled_checks=disable_check
+                )
+            else:
+                report = service.run_with_progress(context, on_task_complete=_mark_done)
     else:
-        report = service.run_with_progress(context)
+        if disable_check:
+            report = service.run_with_progress(context, disabled_checks=disable_check)
+        else:
+            report = service.run_with_progress(context)
 
     render_terminal_report(report, console, print_header=False, verbose=verbose)
 
     if fix_mode:
         fixer = InteractiveAutoFixer(console)
         report = fixer.apply(report, context)
+        if json_output is not None:
+            json_output.parent.mkdir(parents=True, exist_ok=True)
+            json_output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+            console.print(f"JSON report exported to: {json_output}")
         raise typer.Exit(code=report.exit_code)
 
     has_updates = any(r.severity == Severity.OUTD for r in report.results)
@@ -316,12 +348,23 @@ def _system_dry_run_impl(fix_mode: bool = False, verbose: bool = False) -> None:
             console.print()
             upgrade_service = SystemUpgradeService()
             upgrade_service.run(context, console)
+            # Re-evaluate report after system update
+            if disable_check:
+                report = service.run(context, disabled_checks=disable_check)
+            else:
+                report = service.run(context)
+            has_issues = any(r.severity in {Severity.WARN, Severity.FAIL} for r in report.results)
 
     if has_issues:
         console.print()
         if _safe_confirm("Apply fixes for detected issues now?", default=True):
             fixer = InteractiveAutoFixer(console)
             report = fixer.apply(report, context)
+
+    if json_output is not None:
+        json_output.parent.mkdir(parents=True, exist_ok=True)
+        json_output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+        console.print(f"JSON report exported to: {json_output}")
 
     raise typer.Exit(code=report.exit_code)
 
@@ -348,52 +391,55 @@ def _run_scan(
     ui: bool,
     verbose: bool = False,
 ) -> ScanReport:
-    if not ui:
+    is_interactive = (
+        ui
+        and console.is_terminal
+        and not console.is_dumb_terminal
+        and not os.environ.get("NO_ANIMATION")
+        and not os.environ.get("DOTDOCTOR_NO_ANIMATION")
+        and not os.environ.get("NO_COLOR")
+    )
+    if not is_interactive:
         report = use_case.execute(context)
         render_terminal_report(report, console, verbose=verbose)
         return report
 
-    results: list[CheckResult] = []
-    total_checks = use_case.total_checks
-    started = time.monotonic()
+    console.print(format_header(context.profile))
+    console.print()
 
+    checks = use_case.checks
+    states: dict[str, str] = {c.check_id: "running" for c in checks}
+
+    def _build_steps_table() -> Table:
+        grid = Table.grid(expand=False)
+        grid.add_column()
+        grid.add_column(width=STATUS_WIDTH)
+        grid.add_column()
+        grid.add_column()
+        for c in checks:
+            st_renderable: Text | Spinner
+            if states[c.check_id] == "done":
+                st_renderable = Text(STATUS_DONE, style=STYLE_DONE)
+            else:
+                st_renderable = Spinner("dots")
+            grid.add_row(INDENT, st_renderable, GAP, c.check_id)
+        return grid
+
+    results: list[CheckResult] = []
     with Live(
-        build_live_dashboard(
-            profile=context.profile,
-            results=results,
-            total_checks=total_checks,
-            elapsed_seconds=0.0,
-            active_check_id=None,
-        ),
+        _build_steps_table(),
         console=console,
-        screen=True,
-        refresh_per_second=10,
+        transient=True,
+        refresh_per_second=12.5,
     ) as live:
         for result in use_case.execute_iter(context):
             results.append(result)
-            live.update(
-                build_live_dashboard(
-                    profile=context.profile,
-                    results=results,
-                    total_checks=total_checks,
-                    elapsed_seconds=time.monotonic() - started,
-                    active_check_id=result.check_id,
-                )
-            )
-
-        live.update(
-            build_live_dashboard(
-                profile=context.profile,
-                results=results,
-                total_checks=total_checks,
-                elapsed_seconds=time.monotonic() - started,
-                active_check_id=None,
-            )
-        )
+            states[result.check_id] = "done"
+            live.update(_build_steps_table())
 
     check_order = {check.check_id: i for i, check in enumerate(use_case.checks)}
     results.sort(key=lambda r: check_order.get(r.check_id, 999))
 
     report = ScanReport(profile=context.profile, results=results)
-    render_terminal_report(report, console)
+    render_terminal_report(report, console, print_header=False, verbose=verbose)
     return report
