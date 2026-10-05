@@ -291,14 +291,18 @@ def test_legacy_check_id_normalization() -> None:
     assert report.get_result("sys:packages").message == "ok"
 
 
-def test_render_terminal_report_animation_enabled(monkeypatch) -> None:
+def test_render_terminal_report_instant_rendering() -> None:
     output = io.StringIO()
     console = Console(file=output, width=80, color_system=None)
 
     report = ScanReport(
         profile="system",
         results=[
-            CheckResult(check_id="sys.packages", severity=Severity.PASS, message="ok"),
+            CheckResult(
+                check_id="sys.packages",
+                severity=Severity.PASS,
+                message="all good",
+            ),
             CheckResult(
                 check_id="sys.orphans",
                 severity=Severity.WARN,
@@ -309,92 +313,11 @@ def test_render_terminal_report_animation_enabled(monkeypatch) -> None:
         summary={"PASS": 1, "OUTD": 0, "WARN": 1, "FAIL": 0},
     )
 
-    sleeps: list[float] = []
-    monkeypatch.setattr("dotdoctor.cli.render._sleep", lambda sec: sleeps.append(sec))
-
-    render_terminal_report(report, console, animate=True, delay=0.01, summary_delay=0.02)
-
-    # 3 sleeps for item lines + 7 sleeps for rolling summary count-up (1 initial + 6 steps)
-    assert len(sleeps) == 10
-    assert sleeps[:3] == [0.01, 0.01, 0.01]
-    assert sleeps[3:] == [0.02] * 7
-
-
-def test_render_terminal_report_animation_disabled_by_default_non_terminal(monkeypatch) -> None:
-    output = io.StringIO()
-    console = Console(file=output, width=80, color_system=None)
-    assert not console.is_terminal
-
-    report = ScanReport(
-        profile="system",
-        results=[
-            CheckResult(check_id="sys.packages", severity=Severity.PASS, message="ok"),
-        ],
-        summary={"PASS": 1, "OUTD": 0, "WARN": 0, "FAIL": 0},
-    )
-
-    sleeps: list[float] = []
-    monkeypatch.setattr("dotdoctor.cli.render._sleep", lambda sec: sleeps.append(sec))
-
     render_terminal_report(report, console)
-    assert len(sleeps) == 0
-
-
-def test_render_terminal_report_animation_disabled_by_env(monkeypatch) -> None:
-    output = io.StringIO()
-    console = Console(file=output, width=80, color_system=None)
-    monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
-    monkeypatch.setenv("NO_ANIMATION", "1")
-
-    report = ScanReport(
-        profile="system",
-        results=[
-            CheckResult(check_id="sys.packages", severity=Severity.PASS, message="ok"),
-        ],
-        summary={"PASS": 1, "OUTD": 0, "WARN": 0, "FAIL": 0},
-    )
-
-    sleeps: list[float] = []
-    monkeypatch.setattr("dotdoctor.cli.render._sleep", lambda sec: sleeps.append(sec))
-
-    render_terminal_report(report, console)
-    assert len(sleeps) == 0
-
-
-def test_render_terminal_report_animation_all_passed(monkeypatch) -> None:
-    from rich.live import Live
-
-    output = io.StringIO()
-    console = Console(file=output, width=80, color_system=None)
-
-    report = ScanReport(
-        profile="system",
-        results=[
-            CheckResult(check_id="sys.packages", severity=Severity.PASS, message="ok"),
-            CheckResult(check_id="sys.disk", severity=Severity.PASS, message="ok"),
-        ],
-        summary={"PASS": 2, "OUTD": 0, "WARN": 0, "FAIL": 0},
-    )
-
-    updates: list[str] = []
-    original_live_update = Live.update
-
-    def intercept_update(self, renderable):
-        if hasattr(renderable, "plain"):
-            updates.append(renderable.plain)
-        return original_live_update(self, renderable)
-
-    monkeypatch.setattr(Live, "update", intercept_update)
-    monkeypatch.setattr("dotdoctor.cli.render._sleep", lambda sec: None)
-
-    render_terminal_report(report, console, animate=True, delay=0.01, summary_delay=0.02)
-
-    # Every update frame should start with "All " and end with "checks passed"
-    assert len(updates) > 0
-    for u in updates:
-        assert u.startswith("All ")
-        assert u.endswith("checks passed")
-    assert updates[-1] == "All 2 checks passed"
+    out = output.getvalue()
+    assert "sys.packages" in out
+    assert "sys.orphans" in out
+    assert "1 passed · 1 warning" in out
 
 
 def test_render_terminal_report_packages_default_truncation() -> None:

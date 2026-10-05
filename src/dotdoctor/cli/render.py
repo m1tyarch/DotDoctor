@@ -1,11 +1,7 @@
-import os
 import textwrap
-import time
+from typing import Any
 
 from rich.console import Console
-from rich.layout import Layout
-from rich.live import Live
-from rich.table import Table
 from rich.text import Text
 
 from dotdoctor.cli.theme import (
@@ -19,17 +15,7 @@ from dotdoctor.cli.theme import (
     STYLE_WARN,
     format_header,
 )
-from dotdoctor.domain.models import CheckResult, ScanReport, Severity
-
-DEFAULT_ANIMATION_DELAY = 0.025
-DEFAULT_SUMMARY_DELAY = 0.04
-
-
-def _sleep(seconds: float) -> None:
-    try:
-        time.sleep(seconds)
-    except KeyboardInterrupt:
-        pass
+from dotdoctor.domain.models import ScanReport, Severity
 
 
 def _status_label(severity: Severity) -> str:
@@ -54,6 +40,7 @@ def format_summary(
     is_final: bool = True,
     all_passed: bool = False,
     total_target: int | None = None,
+    **kwargs: Any,
 ) -> Text:
     pass_count = summary.get("PASS", 0)
     outd_count = summary.get("OUTD", 0)
@@ -104,11 +91,9 @@ def _wrap_text(text: str, width: int) -> list[str]:
 def render_terminal_report(
     report: ScanReport,
     console: Console,
-    animate: bool | None = None,
-    delay: float = DEFAULT_ANIMATION_DELAY,
-    summary_delay: float = DEFAULT_SUMMARY_DELAY,
     print_header: bool = True,
     verbose: bool = False,
+    **kwargs: Any,
 ) -> None:
     if print_header:
         console.print(format_header(report.profile))
@@ -117,17 +102,6 @@ def render_terminal_report(
     if not report.results:
         console.print(format_summary(report.summary))
         return
-
-    should_animate = (
-        animate
-        if animate is not None
-        else (
-            console.is_terminal
-            and not console.is_dumb_terminal
-            and not os.environ.get("NO_ANIMATION")
-            and not os.environ.get("DOTDOCTOR_NO_ANIMATION")
-        )
-    )
 
     max_status_len = max((len(_status_label(r.severity)) for r in report.results), default=4)
     max_id_len = max((len(r.check_id) for r in report.results), default=0)
@@ -153,15 +127,11 @@ def render_terminal_report(
         line1.append("  ")
         line1.append(msg_lines[0], style=msg_style)
         console.print(line1)
-        if should_animate:
-            _sleep(delay)
 
         for extra_line in msg_lines[1:]:
             cont_line = Text(indent_spaces)
             cont_line.append(extra_line, style=msg_style)
             console.print(cont_line)
-            if should_animate:
-                _sleep(delay)
 
         packages = result.details.get("packages") if result.details else None
         critical = result.details.get("critical") if result.details else None
@@ -188,8 +158,6 @@ def render_terminal_report(
                     pkg_line = Text(indent_spaces)
                     pkg_line.append(p_line, style="dim")
                     console.print(pkg_line)
-                    if should_animate:
-                        _sleep(delay)
 
             if len(packages) > len(to_show) and not verbose:
                 omitted = len(packages) - len(to_show)
@@ -197,8 +165,6 @@ def render_terminal_report(
                 omit_line = Text(indent_spaces)
                 omit_line.append(f"• ({omitted} more {noun}, use -v to show all)", style="dim")
                 console.print(omit_line)
-                if should_animate:
-                    _sleep(delay)
 
         if result.severity != Severity.PASS and result.remediation:
             fix_text = f"fix: {result.remediation}"
@@ -207,112 +173,6 @@ def render_terminal_report(
                 f_line = Text(indent_spaces)
                 f_line.append(fix_line, style="dim")
                 console.print(f_line)
-                if should_animate:
-                    _sleep(delay)
 
     console.print()
-    if should_animate:
-        _animate_summary(report.summary, console, delay=summary_delay)
-    else:
-        console.print(format_summary(report.summary))
-
-
-def _animate_summary(
-    summary: dict[str, int],
-    console: Console,
-    delay: float = DEFAULT_SUMMARY_DELAY,
-) -> None:
-    pass_target = summary.get("PASS", 0)
-    outd_target = summary.get("OUTD", 0)
-    warn_target = summary.get("WARN", 0)
-    fail_target = summary.get("FAIL", 0)
-    total_target = pass_target + outd_target + warn_target + fail_target
-
-    if total_target <= 1:
-        console.print(format_summary(summary, is_final=True))
-        return
-
-    all_passed = total_target > 0 and pass_target == total_target
-    steps = min(12, max(6, total_target))
-    initial_summary = {"PASS": 0, "OUTD": 0, "WARN": 0, "FAIL": 0}
-
-    try:
-        with Live(
-            format_summary(
-                initial_summary,
-                is_final=False,
-                all_passed=all_passed,
-                total_target=total_target,
-            ),
-            console=console,
-            transient=False,
-            refresh_per_second=30,
-        ) as live:
-            _sleep(delay)
-            for step in range(1, steps + 1):
-                ratio = step / steps
-                is_final = step == steps
-                if is_final:
-                    interim = summary
-                else:
-                    interim = {
-                        "PASS": int(round(pass_target * ratio)),
-                        "OUTD": int(round(outd_target * ratio)),
-                        "WARN": int(round(warn_target * ratio)),
-                        "FAIL": int(round(fail_target * ratio)),
-                    }
-                live.update(
-                    format_summary(
-                        interim,
-                        is_final=is_final,
-                        all_passed=all_passed,
-                        total_target=total_target,
-                    )
-                )
-                _sleep(delay)
-    except Exception:
-        console.print(format_summary(summary, is_final=True))
-
-
-def build_live_dashboard(
-    profile: str,
-    results: list[CheckResult],
-    total_checks: int,
-    elapsed_seconds: float,
-    active_check_id: str | None,
-) -> Layout:
-    header = format_header(f"{profile}  ({elapsed_seconds:.1f}s)")
-
-    completed = len(results)
-    ratio = completed / total_checks if total_checks > 0 else 1.0
-    bar_width = 24
-    filled = int(ratio * bar_width)
-    progress_bar = "[" + ("#" * filled) + ("-" * (bar_width - filled)) + "]"
-    progress_text = Text(f"  progress {progress_bar} {completed}/{total_checks}", style="dim")
-
-    body = Table.grid(expand=True)
-    body.add_column()
-    body.add_row(header)
-    body.add_row(Text(""))
-    body.add_row(progress_text)
-    body.add_row(Text(""))
-
-    max_status_len = max((len(_status_label(r.severity)) for r in results), default=4)
-    max_id_len = max((len(r.check_id) for r in results), default=0)
-    for result in results[-12:]:
-        label = _status_label(result.severity)
-        st_style = _status_style(result.severity)
-        id_str = result.check_id.ljust(max_id_len)
-        msg_style = "dim" if result.severity == Severity.PASS else None
-
-        line = Text("  ")
-        line.append(label.ljust(max_status_len), style=st_style)
-        line.append("  ")
-        line.append(id_str)
-        line.append("  ")
-        line.append(result.message, style=msg_style)
-        body.add_row(line)
-
-    layout = Layout()
-    layout.update(body)
-    return layout
+    console.print(format_summary(report.summary))
