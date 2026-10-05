@@ -11,8 +11,7 @@ from dotdoctor.cli.render import (
     format_summary,
     render_terminal_report,
 )
-from dotdoctor.domain.models import CheckResult, ScanReport, Severity
-from dotdoctor.infrastructure.checks.registry import normalize_check_id, resolve_checks
+from dotdoctor.domain.models import CheckResult, ScanReport, Severity, normalize_check_id
 
 
 def test_status_label_outd_mapped_to_old() -> None:
@@ -275,24 +274,9 @@ def test_detect_disk_space_diff_fs_separated(monkeypatch, tmp_path: Path) -> Non
     assert " · " in status.message
 
 
-def test_legacy_check_id_normalization_and_resolution() -> None:
+def test_legacy_check_id_normalization() -> None:
     assert normalize_check_id("sys:packages") == "sys.packages"
     assert normalize_check_id("sys.packages") == "sys.packages"
-    assert normalize_check_id("path:integrity") == "path.integrity"
-
-    from dotdoctor.domain.config import ProfileConfig
-
-    # resolve_checks with legacy enabled_checks and disabled_checks
-    profile = ProfileConfig(
-        enabled_checks=["path:integrity", "shell.config"],
-    )
-    checks = resolve_checks(
-        profile=profile,
-        disabled_checks={"path:integrity"},
-    )
-    check_ids = [c.check_id for c in checks]
-    assert "path.integrity" not in check_ids
-    assert "shell.config" in check_ids
 
     # ScanReport.get_result supports both forms
     report = ScanReport(

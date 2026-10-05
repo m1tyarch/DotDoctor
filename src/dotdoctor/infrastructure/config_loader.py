@@ -51,17 +51,6 @@ def apply_env_overrides(config: DotDoctorConfig) -> DotDoctorConfig:
     if not disabled_checks_raw:
         return config
 
-    disabled_checks = {item.strip() for item in disabled_checks_raw.split(",") if item.strip()}
-    if not disabled_checks:
-        return config
-
-    updated_profiles = {}
-    for profile_name, profile_cfg in config.profiles.items():
-        kept_checks = [
-            check_id for check_id in profile_cfg.enabled_checks if check_id not in disabled_checks
-        ]
-        updated_profiles[profile_name] = profile_cfg.model_copy(
-            update={"enabled_checks": kept_checks}
-        )
-
-    return config.model_copy(update={"profiles": updated_profiles})
+    disabled_checks = set(config.disabled_checks)
+    disabled_checks.update(item.strip() for item in disabled_checks_raw.split(",") if item.strip())
+    return config.model_copy(update={"disabled_checks": sorted(disabled_checks)})

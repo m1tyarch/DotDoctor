@@ -6,7 +6,7 @@ This file serves as the definitive reference and set of instructions for AI codi
 
 ## 1. Project Overview & Philosophy
 
-**DotDoctor** is a fast, minimalist CLI/TUI diagnostic and maintenance tool for Linux (primarily Arch Linux, with extensible checks for package managers, Flatpak, firmware, kernels, and dev environments).
+**DotDoctor** is a fast, minimalist CLI/TUI diagnostic and maintenance tool for Linux (primarily Arch Linux, with checks for package managers, Flatpak, firmware, kernels, cache, and system hygiene).
 
 ### Core Principles
 - **Minimalism & Restraint**: Zero visual noise. No emojis, no ASCII borders or box drawings, no gratuitous color highlights.
@@ -25,17 +25,14 @@ src/dotdoctor/
 ├── domain/             # Pure models & protocols (ZERO external I/O)
 │   ├── models.py       # Severity (PASS, OUTD, WARN, FAIL), CheckResult, ScanReport
 │   ├── context.py      # ScanContext (paths, environment, shell)
-│   ├── config.py       # Pydantic configuration models
-│   └── ports.py        # EnvironmentCheck protocol
+│   └── config.py       # DotDoctorConfig model
 ├── application/        # Application services & orchestrators
 │   ├── system_update.py # SystemDryRunService (scan) & SystemUpgradeService (sysup)
-│   ├── auto_fix.py     # InteractiveAutoFixer (safe remediation execution)
-│   └── use_cases.py    # RunScanUseCase (profile check execution)
+│   └── auto_fix.py     # InteractiveAutoFixer (safe system remediation execution)
 ├── infrastructure/     # External integrations & I/O
-│   ├── checks/         # Check implementations (core dev binaries, PATH, etc.)
 │   └── config_loader.py# XDG-compliant configuration loader with precedence
 ├── cli/                # Presentation layer (Typer + Rich)
-│   ├── app.py          # CLI commands (root, scan, version) & flags
+│   ├── app.py          # CLI commands (dotdoctor, --sysup, --fix) & flags
 │   ├── theme.py        # Design tokens, palette, and status line formatters
 │   └── render.py       # Terminal report rendering & summary text
 └── main.py             # Top-level entrypoint with SIGINT (exit code 130) handling
@@ -85,7 +82,7 @@ When modifying, adding, or refactoring CLI outputs or checks, **strictly adhere 
    - Forbidden to run for real: `dotdoctor --sysup`, `pacman`, `yay`, `paru`, `flatpak update/uninstall`, `fwupdmgr`, `paccache`.
 2. **Safe testing commands**:
    - Always run commands with mocks or non-destructive test harnesses.
-   - Safe to run directly: `.venv/bin/dotdoctor --help`, `dotdoctor --env` (read-only dev checks), read-only git/python commands.
+   - Safe to run directly: `.venv/bin/dotdoctor --help`, `dotdoctor` (read-only system dry-run checks in test environments), read-only git/python commands.
 
 ---
 
@@ -112,10 +109,10 @@ Every task is considered complete **only** when all of the following pass withou
 ## 6. Common CLI Modes & Flags
 
 - **`dotdoctor`** (default): Runs parallel dry-run system checks (`SystemDryRunService`).
-- **`dotdoctor --sysup`**: Runs sequential system upgrade (`SystemUpgradeService`).
-- **`dotdoctor --fix`**: Runs interactive auto-fixes for detected `WARN`/`FAIL` issues.
-- **`dotdoctor --env`**: Runs development environment checks for profile `python-dev`.
-- **`dotdoctor scan --profile <name>`**: Runs checks for a specific profile (supports `--profile system`).
+- **`dotdoctor --sysup`**: Runs sequential system upgrade flow (`SystemUpgradeService`).
+- **`dotdoctor --fix`**: Runs interactive auto-fixes for detected `WARN`/`FAIL` issues (`InteractiveAutoFixer`).
 - **`--disable-check <id>`**: Excludes specific checks (also reads `DOTDOCTOR_DISABLE_CHECKS` env var).
 - **`--json-output <path>`**: Exports report to machine-readable JSON.
 - **`-v`, `--verbose`**: Shows expanded details (e.g. all available update package versions).
+- **`--config <path>`**: Explicit path to YAML config file.
+- **`dotdoctor version`**: Prints version information.

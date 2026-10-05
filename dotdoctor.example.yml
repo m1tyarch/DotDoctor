@@ -1,63 +1,17 @@
-profiles:
-  python-dev:
-    enabled_checks:
-      - binary.python
-      - binary.pip
-      - binary.git
-      - binary.gcc
-      - binary.g++
-      - binary.cmake
-      - binary.make
-      - path.integrity
-      - shell.config
-      - permissions.dev_dirs
-    required_binaries:
-      - name: python
-        min_version: "3.11"
-      - name: pip
-      - name: git
-        min_version: "2.30"
-      - name: gcc
-        min_version: "10.0"
-      - name: g++
-        min_version: "10.0"
-      - name: cmake
-        min_version: "3.20"
-      - name: make
-    permission_paths:
-      - "~"
-      - "."
-    shell_config_files:
-      - "~/.bashrc"
-      - "~/.zshrc"
-  cpp-dev:
-    enabled_checks:
-      - binary.python
-      - binary.pip
-      - binary.git
-      - binary.gcc
-      - binary.g++
-      - binary.cmake
-      - binary.make
-      - path.integrity
-      - shell.config
-      - permissions.dev_dirs
-    required_binaries:
-      - name: python
-        min_version: "3.11"
-      - name: pip
-      - name: git
-        min_version: "2.30"
-      - name: gcc
-        min_version: "11.0"
-      - name: g++
-        min_version: "11.0"
-      - name: cmake
-        min_version: "3.22"
-      - name: make
-    permission_paths:
-      - "~"
-      - "."
-    shell_config_files:
-      - "~/.bashrc"
-      - "~/.zshrc"
+# DotDoctor Configuration
+# Placed at $XDG_CONFIG_HOME/dotdoctor/config.yml or ~/.config/dotdoctor/config.yml
+
+# List of check IDs to disable during scans:
+#   sys.packages        - Pacman system packages
+#   sys.aur             - AUR updates (yay / paru)
+#   sys.flatpak         - Flatpak packages
+#   sys.flatpak-unused  - Unused Flatpak runtimes
+#   sys.firmware        - Firmware updates (fwupd)
+#   sys.reboot          - Reboot required check
+#   sys.disk            - Disk space check
+#   sys.orphans         - Orphan packages
+#   sys.cache           - Pacman cache size
+#   sys.pacnew          - .pacnew configuration files
+#   sys.services        - Failed systemd units
+#   sys.journal         - Systemd journal size
+disabled_checks: []

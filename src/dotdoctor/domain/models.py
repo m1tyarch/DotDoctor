@@ -55,8 +55,12 @@ class ScanReport(BaseModel):
         return 0
 
     def get_result(self, check_id: str) -> CheckResult | None:
-        norm = check_id.replace(":", ".")
+        norm = normalize_check_id(check_id)
         for r in self.results:
-            if r.check_id == check_id or r.check_id.replace(":", ".") == norm:
+            if r.check_id == check_id or normalize_check_id(r.check_id) == norm:
                 return r
         return None
+
+
+def normalize_check_id(check_id: str) -> str:
+    return check_id.replace(":", ".")

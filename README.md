@@ -1,38 +1,38 @@
 DotDoctor
 =========
 
-DotDoctor is a Linux CLI utility for diagnosing development environment issues and checking available system updates.
+DotDoctor is a fast, minimalist Linux CLI utility for system diagnostics, hygiene audits, and comprehensive system updates.
 
 Key Features
 ------------
 
-- System dry-run update & hygiene audit by default (`dotdoctor` or `--sys`) for Arch/AUR packages, Flatpaks, firmware, Oh-My-Zsh, orphan packages, pacman cache, .pacnew files, and failed systemd units
-- Development environment checks (`--env` or `scan`) (binary availability, version checks, PATH integrity, shell config sanity, directory permissions)
-- Live terminal dashboard and plain report mode
-- Optional interactive auto-fix flow for actionable findings (`--fix`)
-- System upgrade flow (`--sysup`) with strict failure handling, mirror recovery, Flatpak runtime cleanup, and pacman cache pruning
+- **Parallel System Diagnostics & Dry-Run** (`dotdoctor`): Fast parallel audit of Arch/AUR packages, Flatpaks, firmware, Oh-My-Zsh, orphan packages, pacman cache, `.pacnew` files, disk space, and failed systemd units.
+- **Sequential System Upgrade** (`dotdoctor --sysup`): Complete, safe update flow with pre-update snapshot (Snapper / Timeshift), mirror refresh, package/AUR updates, Flatpak updates, unused runtime pruning, cache cleanup, Oh-My-Zsh, and firmware checks.
+- **Interactive Auto-Fix** (`dotdoctor --fix`): Clean up detected system hygiene findings (orphan packages, pacman cache, unused Flatpak runtimes) safely with interactive confirmation.
+- **Zero Visual Noise**: Minimalist 2-space terminal design, clear status tokens (`PASS`, `WARN`, `FAIL`, `OLD`, `DONE`, `SKIP`), and honest reporting.
 
 System Update Safety Model
 --------------------------
 
-- AUR parsing recognizes flagged packages, including out-of-date markers from `yay` or `paru`
-- Exit codes from update commands are handled strictly (`pacman`/`yay`/`paru`, `flatpak`, `fwupdmgr`)
-- Fatal network and mirror failures are treated as hard failures
-- Mirror fallback is attempted when package sync fails with mirror/network symptoms
-- Fatal update failures terminate with exit code `1`
+- Pre-update system snapshot creation when Snapper or Timeshift is available.
+- Strict subprocess exit code handling (`pacman`, `yay`/`paru`, `flatpak`, `fwupdmgr`).
+- Distinguishes AUR out-of-date flagged packages from installable updates.
+- Mirror fallback is attempted when package sync fails with mirror/network symptoms.
+- Fatal update failures terminate cleanly with exit code `1`.
 
 Requirements
 ------------
 
 - Python `>=3.11`
-- Linux environment
-- Optional system tools for extended checks and updates:
+- Linux environment (primarily Arch Linux / CachyOS)
+- System tools (used dynamically when available):
 	- `checkupdates`
 	- `paru` or `yay`
 	- `pacman-contrib` (`paccache`, `pacdiff`)
 	- `flatpak`
 	- `fwupdmgr`
 	- `cachyos-rate-mirrors` or `reflector`
+	- `snapper` or `timeshift`
 
 Installation
 ------------
@@ -54,56 +54,65 @@ pip install -e .[dev]
 Usage
 -----
 
-Run default system dry-run update checks:
+### 1. Diagnostic / Dry-Run Scan (Default)
+
+Run parallel system diagnostic checks:
 
 ```bash
 dotdoctor
 ```
 
-Run development environment scan:
+Show expanded details (e.g. all available update package versions):
 
 ```bash
-dotdoctor --env
+dotdoctor -v
 ```
 
-Run development environment scan with auto-fix:
+Export report to JSON:
 
 ```bash
-dotdoctor --env --fix
+dotdoctor --json-output report.json
 ```
 
-Run profile explicitly:
+Disable specific checks:
 
 ```bash
-dotdoctor scan --profile python-dev
+dotdoctor --disable-check sys.firmware --disable-check sys.omz
 ```
 
-Run without fullscreen UI:
+### 2. Comprehensive System Upgrade
 
-```bash
-dotdoctor scan --no-ui
-```
-
-Export JSON report:
-
-```bash
-dotdoctor scan --json-output artifacts/report.json
-```
-
-Run system upgrades:
+Run full sequential system upgrade flow:
 
 ```bash
 dotdoctor --sysup
 ```
 
+### 3. Interactive Auto-Fix
+
+Interactively resolve detected system hygiene issues:
+
+```bash
+dotdoctor --fix
+```
+
 Configuration
 -------------
 
-DotDoctor supports YAML-based configuration and profiles.
+DotDoctor supports YAML-based configuration for disabling checks.
 
-- Default file: `dotdoctor.yml`
 - Example file: `dotdoctor.example.yml`
+- Default resolution: `$XDG_CONFIG_HOME/dotdoctor/config.yml` or `~/.config/dotdoctor/config.yml`
 - Override path: `--config /path/to/config.yml`
+- Environment variable: `DOTDOCTOR_DISABLE_CHECKS=sys.firmware,sys.omz`
+
+Example configuration:
+
+```yaml
+disabled_checks:
+  - sys.firmware
+  - sys.omz
+```
 
 Testing
 -------
@@ -111,15 +120,14 @@ Testing
 Run tests:
 
 ```bash
-.venv/bin/pytest --tb=short
+.venv/bin/pytest -v
 ```
 
 Project Layout
 --------------
 
-- `src/dotdoctor/domain`: entities, models, config schemas, ports
-- `src/dotdoctor/application`: use-cases and system update flows
-- `src/dotdoctor/infrastructure`: check implementations and config loading
-- `src/dotdoctor/cli`: Typer commands and terminal rendering
-- `tests/`: unit and integration test suites
-
+- `src/dotdoctor/domain`: Models, context, configuration schema
+- `src/dotdoctor/application`: System upgrade and dry-run orchestrators, interactive auto-fixer
+- `src/dotdoctor/infrastructure`: Configuration loader with XDG precedence
+- `src/dotdoctor/cli`: Typer application, theme design tokens, terminal renderer
+- `tests/`: Unit and integration test suites

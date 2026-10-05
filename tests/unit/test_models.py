@@ -3,7 +3,7 @@ from dotdoctor.domain.models import CheckResult, ScanReport, Severity
 
 def test_scan_report_summary_and_exit_code_warn() -> None:
     report = ScanReport(
-        profile="python-dev",
+        profile="system",
         results=[
             CheckResult(check_id="a", severity=Severity.PASS, message="ok"),
             CheckResult(check_id="b", severity=Severity.WARN, message="warn"),
@@ -16,7 +16,7 @@ def test_scan_report_summary_and_exit_code_warn() -> None:
 
 def test_scan_report_exit_code_fail_takes_priority() -> None:
     report = ScanReport(
-        profile="python-dev",
+        profile="system",
         results=[CheckResult(check_id="x", severity=Severity.FAIL, message="fail")],
     )
 
