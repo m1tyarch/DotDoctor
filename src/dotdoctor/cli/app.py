@@ -273,7 +273,8 @@ def _system_fix_impl(
     issues = [r for r in report.results if r.severity in {Severity.WARN, Severity.FAIL}]
 
     if not issues:
-        console.print("  [dim green]PASS[/dim green]  System hygiene clean. Nothing to fix.")
+        console.print("  [dim green]PASS[/dim green]  System hygiene clean.")
+        console.print("\n[dim]Nothing to fix.[/dim]")
         if json_output is not None:
             json_output.parent.mkdir(parents=True, exist_ok=True)
             json_output.write_text(report.model_dump_json(indent=2), encoding="utf-8")

@@ -175,7 +175,8 @@ def test_root_fix_when_clean_exits_early(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert called_fix == []
-    assert "System hygiene clean. Nothing to fix." in result.stdout
+    assert "System hygiene clean." in result.stdout
+    assert "Nothing to fix." in result.stdout
 
 
 def test_root_conflicting_options() -> None:
