@@ -1,6 +1,7 @@
 import os
 import platform
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -14,12 +15,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import typer
 from rich.console import Console
 from rich.live import Live
 from rich.markup import escape
 from rich.spinner import Spinner
 from rich.table import Table
 
+from dotdoctor.application.maintenance import (
+    PACKAGE_RE,
+    POSTFLIGHT_IDS,
+    PREFLIGHT_IDS,
+    MaintenanceChecks,
+)
 from dotdoctor.cli.theme import (
     GAP,
     INDENT,
@@ -30,8 +38,12 @@ from dotdoctor.cli.theme import (
     format_status_line,
     format_sysup_summary,
 )
+from dotdoctor.domain.config import DotDoctorConfig
 from dotdoctor.domain.context import ScanContext
 from dotdoctor.domain.models import CheckResult, ScanReport, Severity
+from dotdoctor.infrastructure.audit_processes import AuditCancelled, AuditSession, check_cancelled
+from dotdoctor.infrastructure.audit_processes import capture as capture_command
+from dotdoctor.infrastructure.maintenance import MaintenanceState, capture
 
 _ORIGINAL_SUBPROCESS_RUN = subprocess.run
 
@@ -58,6 +70,16 @@ def is_online(
 class _ExecResult:
     completed: subprocess.CompletedProcess[str] | None
     timed_out: bool = False
+
+
+def _unverified(check_id: str, message: str, remediation: str | None = None) -> CheckResult:
+    return CheckResult(
+        check_id=check_id,
+        severity=Severity.WARN,
+        message=message,
+        remediation=remediation,
+        details={"verified": False},
+    )
 
 
 @dataclass(frozen=True)
@@ -164,7 +186,7 @@ def detect_disk_space_status(
     try:
         boot_free = shutil.disk_usage(boot_path).free if Path(boot_path).exists() else root_free
     except OSError:
-        boot_free = root_free
+        raise OSError("free space on /boot could not be verified") from None
 
     root_str = _format_bytes(root_free)
     boot_str = _format_bytes(boot_free)
@@ -225,14 +247,7 @@ def _run_capture(
 ) -> _ExecResult:
     try:
         return _ExecResult(
-            completed=subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                input=input_str,
-            )
+            completed=capture_command(command, timeout, input_str, {**os.environ, "LC_ALL": "C"}),
         )
     except subprocess.TimeoutExpired:
         return _ExecResult(completed=None, timed_out=True)
@@ -250,13 +265,17 @@ def detect_pacnew_files() -> list[str]:
     files: list[str] = []
     etc_dir = Path("/etc")
     if etc_dir.exists():
-        try:
-            for p in etc_dir.rglob("*.pacnew"):
-                files.append(str(p))
-            for p in etc_dir.rglob("*.pacsave"):
-                files.append(str(p))
-        except OSError:
-            pass
+
+        def inaccessible(error: OSError) -> None:
+            raise error
+
+        for directory, _, names in os.walk(etc_dir, onerror=inaccessible):
+            check_cancelled()
+            files.extend(
+                str(Path(directory) / name)
+                for name in names
+                if name.endswith((".pacnew", ".pacsave"))
+            )
     return sorted(files)
 
 
@@ -267,6 +286,11 @@ UPDATE_CHECK_IDS: frozenset[str] = frozenset(
         "sys.flatpak",
         "sys.firmware",
         "sys.shell-omz",
+        "sys.keyring",
+        "sys.news",
+        "sys.security",
+        "sys.rebuild",
+        *PREFLIGHT_IDS,
     }
 )
 
@@ -280,6 +304,11 @@ FIX_CHECK_IDS: frozenset[str] = frozenset(
         "sys.services",
         "sys.disk",
         "sys.reboot",
+        "sys.backup",
+        "sys.timers",
+        "sys.trim",
+        "sys.btrfs",
+        "sys.integrity",
     }
 )
 
@@ -298,9 +327,11 @@ class SystemDryRunService:
         self,
         is_online_fn: Callable[[], bool] = is_online,
         aur_helper_fn: Callable[[], str | None] = detect_aur_helper,
+        config: DotDoctorConfig | None = None,
     ) -> None:
         self._is_online_fn = is_online_fn
         self._aur_helper_fn = aur_helper_fn
+        self.config = config or DotDoctorConfig()
 
     def build_tasks(
         self,
@@ -309,7 +340,7 @@ class SystemDryRunService:
         include_checks: set[str] | list[str] | frozenset[str] | None = None,
     ) -> list[SystemCheckTask]:
         tasks: list[SystemCheckTask] = []
-        disabled: set[str] = set(disabled_checks or [])
+        disabled: set[str] = {*self.config.disabled_checks, *(disabled_checks or [])}
         env_disabled = os.environ.get("DOTDOCTOR_DISABLE_CHECKS", "")
         if env_disabled:
             disabled.update(item.strip() for item in env_disabled.split(",") if item.strip())
@@ -323,7 +354,15 @@ class SystemDryRunService:
                 or cid.replace(":", ".") in disabled
             )
 
-        network_checks = {"sys.packages", "sys.aur", "sys.flatpak", "sys.firmware", "sys.shell-omz"}
+        network_checks = {
+            "sys.packages",
+            "sys.aur",
+            "sys.flatpak",
+            "sys.firmware",
+            "sys.shell-omz",
+            "sys.news",
+            "sys.security",
+        }
 
         def _is_included(cid: str) -> bool:
             if includes is None:
@@ -340,7 +379,7 @@ class SystemDryRunService:
             if _is_included(task.check_id) and not _is_disabled(task.check_id):
                 tasks.append(task)
 
-        needs_network = includes is None or any(_is_included(c) for c in network_checks)
+        needs_network = any(_is_included(c) and not _is_disabled(c) for c in network_checks)
         online = self._is_online_fn() if needs_network else True
 
         if not online:
@@ -357,13 +396,14 @@ class SystemDryRunService:
                 )
             )
         else:
-            _add_task(
-                SystemCheckTask(
-                    check_id="sys.packages",
-                    label="Packages",
-                    runner=lambda: self._check_arch_packages(context),
+            if shutil.which("pacman") or shutil.which("checkupdates"):
+                _add_task(
+                    SystemCheckTask(
+                        check_id="sys.packages",
+                        label="Packages",
+                        runner=lambda: self._check_arch_packages(context),
+                    )
                 )
-            )
 
             aur_helper = self._aur_helper_fn()
             if aur_helper is not None:
@@ -384,13 +424,14 @@ class SystemDryRunService:
                     )
                 )
 
-            _add_task(
-                SystemCheckTask(
-                    check_id="sys.firmware",
-                    label="Firmware updates",
-                    runner=lambda: self._check_firmware(context),
+            if shutil.which("fwupdmgr") is not None:
+                _add_task(
+                    SystemCheckTask(
+                        check_id="sys.firmware",
+                        label="Firmware updates",
+                        runner=lambda: self._check_firmware(context),
+                    )
                 )
-            )
 
             omz_path = _resolve_oh_my_zsh_path(context)
             if omz_path is not None:
@@ -471,6 +512,19 @@ class SystemDryRunService:
                 )
             )
 
+        for cid, label, runner in MaintenanceChecks(self.config).registrations(context):
+            if not online and cid in {"sys.news", "sys.security"}:
+
+                def offline_result(check_id: str = cid) -> CheckResult:
+                    return CheckResult(
+                        check_id=check_id,
+                        severity=Severity.WARN,
+                        message="not verified: internet connection unavailable",
+                        details={"verified": False},
+                    )
+
+                runner = offline_result
+            _add_task(SystemCheckTask(check_id=cid, label=label, runner=runner))
         return tasks
 
     def run(
@@ -479,17 +533,11 @@ class SystemDryRunService:
         disabled_checks: set[str] | list[str] | None = None,
         include_checks: set[str] | list[str] | frozenset[str] | None = None,
     ) -> ScanReport:
-        try:
-            if disabled_checks or include_checks:
-                return self.run_with_progress(
-                    context,
-                    on_task_complete=None,
-                    disabled_checks=disabled_checks,
-                    include_checks=include_checks,
-                )
-            return self.run_with_progress(context, on_task_complete=None)
-        except TypeError:
-            return self.run_with_progress(context)
+        return self.run_with_progress(
+            context,
+            disabled_checks=disabled_checks,
+            include_checks=include_checks,
+        )
 
     def run_with_progress(
         self,
@@ -497,27 +545,41 @@ class SystemDryRunService:
         on_task_complete: Callable[[str], None] | None = None,
         disabled_checks: set[str] | list[str] | None = None,
         include_checks: set[str] | list[str] | frozenset[str] | None = None,
+        tasks: list[SystemCheckTask] | None = None,
+        on_task_result: Callable[[str, CheckResult | None], None] | None = None,
     ) -> ScanReport:
-        tasks = self.build_tasks(
-            context,
-            disabled_checks=disabled_checks,
-            include_checks=include_checks,
+        if tasks is None:
+            tasks = self.build_tasks(
+                context,
+                disabled_checks=disabled_checks,
+                include_checks=include_checks,
+            )
+        results = self._run_tasks(
+            tasks, on_task_complete=on_task_complete, on_task_result=on_task_result
         )
-        results = self._run_tasks(tasks, on_task_complete=on_task_complete)
         return ScanReport(profile=context.profile, results=results)
 
     def _run_tasks(
         self,
         tasks: list[SystemCheckTask],
         on_task_complete: Callable[[str], None] | None,
+        on_task_result: Callable[[str, CheckResult | None], None] | None = None,
     ) -> list[CheckResult]:
         if not tasks:
             return []
 
         ordered_results: dict[str, CheckResult | None] = {}
-        with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+        session = AuditSession()
+        pool = ThreadPoolExecutor(max_workers=len(tasks), thread_name_prefix="dotdoctor-audit")
+
+        def execute(task: SystemCheckTask) -> CheckResult | None:
+            with session.bind():
+                return task.runner()
+
+        interrupted = False
+        try:
             futures: dict[Future[CheckResult | None], SystemCheckTask] = {
-                pool.submit(task.runner): task for task in tasks
+                pool.submit(execute, task): task for task in tasks
             }
             pending = set(futures.keys())
             try:
@@ -525,14 +587,32 @@ class SystemDryRunService:
                     done, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
                     for future in done:
                         task = futures[future]
-                        ordered_results[task.check_id] = future.result()
+                        try:
+                            ordered_results[task.check_id] = future.result()
+                        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                            ordered_results[task.check_id] = CheckResult(
+                                check_id=task.check_id,
+                                severity=Severity.WARN,
+                                message=f"check could not be completed: {str(exc)[:160]}",
+                                details={"verified": False},
+                            )
+                        if on_task_result is not None:
+                            on_task_result(task.check_id, ordered_results[task.check_id])
                         if on_task_complete is not None:
                             on_task_complete(task.check_id)
-            except KeyboardInterrupt:
+            except (KeyboardInterrupt, AuditCancelled):
+                interrupted = True
+                session.cancel()
                 for f in pending:
                     f.cancel()
-                pool.shutdown(wait=False, cancel_futures=True)
-                raise
+                raise KeyboardInterrupt() from None
+        except BaseException:
+            if not interrupted:
+                interrupted = True
+                session.cancel()
+            raise
+        finally:
+            pool.shutdown(wait=not interrupted, cancel_futures=interrupted)
 
         collected_results: list[CheckResult] = []
         for task in tasks:
@@ -544,12 +624,7 @@ class SystemDryRunService:
     def _check_arch_packages(self, context: ScanContext) -> CheckResult:
         if shutil.which("checkupdates") is None:
             if shutil.which("pacman") is None:
-                return CheckResult(
-                    check_id="sys.packages",
-                    severity=Severity.PASS,
-                    message="pacman not installed",
-                    remediation=None,
-                )
+                return _unverified("sys.packages", "pacman not installed")
             return CheckResult(
                 check_id="sys.packages",
                 severity=Severity.WARN,
@@ -559,12 +634,7 @@ class SystemDryRunService:
 
         result = _run_capture(["checkupdates"], timeout=60)
         if result.timed_out:
-            return CheckResult(
-                check_id="sys.packages",
-                severity=Severity.FAIL,
-                message="package check timed out",
-                remediation="refresh mirror list and retry",
-            )
+            return _unverified("sys.packages", "package check timed out", "checkupdates")
         if result.completed is None:
             return CheckResult(
                 check_id="sys.packages",
@@ -574,7 +644,7 @@ class SystemDryRunService:
             )
         completed = result.completed
         lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
-        if completed.returncode == 2 or not lines:
+        if completed.returncode == 2:
             return _result_for_count("sys.packages", 0)
 
         if completed.returncode not in {0, 2}:
@@ -582,8 +652,11 @@ class SystemDryRunService:
                 check_id="sys.packages",
                 severity=Severity.FAIL,
                 message="package check failed",
-                remediation="pacman -Sy",
+                remediation="dotdoctor --sysup",
             )
+
+        if not lines:
+            return _result_for_count("sys.packages", 0)
 
         pkg_entries: list[str] = []
         critical_pkgs: list[str] = []
@@ -623,20 +696,12 @@ class SystemDryRunService:
 
     def _check_flatpak(self, context: ScanContext) -> CheckResult:
         if shutil.which("flatpak") is None:
-            return CheckResult(
-                check_id="sys.flatpak",
-                severity=Severity.PASS,
-                message="flatpak not installed",
-                remediation=None,
-            )
+            return _unverified("sys.flatpak", "flatpak not installed")
 
         result = _run_capture(["flatpak", "remote-ls", "--updates"], timeout=60)
         if result.timed_out:
-            return CheckResult(
-                check_id="sys.flatpak",
-                severity=Severity.FAIL,
-                message="Flatpak check timed out",
-                remediation="check network connectivity and retry",
+            return _unverified(
+                "sys.flatpak", "Flatpak check timed out", "flatpak remote-ls --updates"
             )
         if result.completed is None:
             return CheckResult(
@@ -668,21 +733,11 @@ class SystemDryRunService:
 
     def _check_firmware(self, context: ScanContext) -> CheckResult:
         if shutil.which("fwupdmgr") is None:
-            return CheckResult(
-                check_id="sys.firmware",
-                severity=Severity.PASS,
-                message="fwupd not installed",
-                remediation=None,
-            )
+            return _unverified("sys.firmware", "fwupd not installed")
 
         refresh = _run_capture(["fwupdmgr", "refresh"], timeout=90)
         if refresh.timed_out:
-            return CheckResult(
-                check_id="sys.firmware",
-                severity=Severity.FAIL,
-                message="fwupdmgr refresh timed out",
-                remediation="check network connectivity and retry",
-            )
+            return _unverified("sys.firmware", "fwupdmgr refresh timed out", "fwupdmgr refresh")
         if refresh.completed is None:
             return CheckResult(
                 check_id="sys.firmware",
@@ -690,14 +745,17 @@ class SystemDryRunService:
                 message="could not refresh firmware metadata",
                 remediation="fwupdmgr refresh",
             )
+        if refresh.completed.returncode not in {0, 2}:
+            return _unverified(
+                "sys.firmware",
+                "firmware metadata refresh failed; updates not verified",
+                "fwupdmgr refresh",
+            )
 
         updates_result = _run_capture(["fwupdmgr", "get-updates"], timeout=90)
         if updates_result.timed_out:
-            return CheckResult(
-                check_id="sys.firmware",
-                severity=Severity.FAIL,
-                message="fwupdmgr get-updates timed out",
-                remediation="check network connectivity and retry",
+            return _unverified(
+                "sys.firmware", "fwupdmgr get-updates timed out", "fwupdmgr get-updates"
             )
         if updates_result.completed is None:
             return CheckResult(
@@ -727,18 +785,31 @@ class SystemDryRunService:
             )
 
         if update_count == 0:
-            return CheckResult(
-                check_id="sys.firmware",
-                severity=Severity.PASS,
-                message="no firmware updates",
-                remediation=None,
-                details={"updates": 0},
+            lines = [line for line in completed.stdout.splitlines() if line.strip()]
+            no_update_heading = re.compile(
+                r"^Devices with (?:the latest available firmware version|"
+                r"no available firmware updates):$"
+            )
+            if any(no_update_heading.fullmatch(line) for line in lines) and all(
+                no_update_heading.fullmatch(line) or line[0].isspace() for line in lines
+            ):
+                return _result_for_count("sys.firmware", 0)
+            return _unverified(
+                "sys.firmware",
+                "firmware update output could not be verified",
+                "fwupdmgr get-updates",
             )
 
         return _result_for_count("sys.firmware", update_count)
 
     def _check_oh_my_zsh(self, omz_path: str) -> CheckResult:
         update_count = _detect_oh_my_zsh_updates(omz_path)
+        if update_count is None:
+            return _unverified(
+                "sys.shell-omz",
+                "Oh-My-Zsh updates could not be verified",
+                f"git -C {shlex.quote(omz_path)} status",
+            )
         if update_count > 0:
             return CheckResult(
                 check_id="sys.shell-omz",
@@ -772,6 +843,13 @@ class SystemDryRunService:
                 },
             )
 
+        if not status.installed_kernels:
+            return _unverified(
+                "sys.reboot",
+                "installed kernels unavailable; reboot state not verified",
+                "ls /usr/lib/modules",
+            )
+
         return CheckResult(
             check_id="sys.reboot",
             severity=Severity.PASS,
@@ -800,11 +878,8 @@ class SystemDryRunService:
     def _check_aur_packages(self, context: ScanContext, aur_helper: str = "yay") -> CheckResult:
         result = _run_capture([aur_helper, "-Qua"], timeout=60)
         if result.timed_out:
-            return CheckResult(
-                check_id="sys.aur",
-                severity=Severity.FAIL,
-                message=f"{aur_helper} update check timed out",
-                remediation="refresh mirror list and retry",
+            return _unverified(
+                "sys.aur", f"{aur_helper} update check timed out", f"{aur_helper} -Qua"
             )
         if result.completed is None:
             return CheckResult(
@@ -814,6 +889,19 @@ class SystemDryRunService:
                 remediation=f"{aur_helper} -Qua",
             )
         lines = [line.strip() for line in result.completed.stdout.splitlines() if line.strip()]
+        no_matches = (
+            result.completed.returncode == 1
+            and not lines
+            and not getattr(result.completed, "stderr", "").strip()
+        )
+        # Pacman-compatible query helpers use exit 1 for an empty selection.
+        # Output accompanying that code can instead describe a real failure.
+        if result.completed.returncode != 0 and not no_matches:
+            return _unverified(
+                "sys.aur",
+                f"{aur_helper} update check failed (exit={result.completed.returncode})",
+                f"{aur_helper} -Qua",
+            )
         flagged = [line for line in lines if _AUR_FLAGGED_RE.search(line)]
         regular = [line for line in lines if line not in flagged]
 
@@ -869,22 +957,31 @@ class SystemDryRunService:
         context: ScanContext,
         cache_dir: Path = Path("/var/cache/pacman/pkg"),
     ) -> CheckResult:
-        if not cache_dir.exists():
+        try:
+            cache_dir.stat()
+        except FileNotFoundError:
             return CheckResult(
                 check_id="sys.cache",
                 severity=Severity.PASS,
                 message="pacman cache clean",
                 remediation=None,
             )
+        except OSError:
+            return _unverified(
+                "sys.cache", "pacman cache could not be inspected", "du -sh /var/cache/pacman/pkg"
+            )
 
         total_bytes = 0
         try:
             with os.scandir(cache_dir) as it:
                 for entry in it:
+                    check_cancelled()
                     if entry.is_file(follow_symlinks=False):
                         total_bytes += entry.stat().st_size
         except OSError:
-            pass
+            return _unverified(
+                "sys.cache", "pacman cache could not be inspected", "du -sh /var/cache/pacman/pkg"
+            )
 
         total_str = _format_bytes(total_bytes)
         candidates = 0
@@ -892,6 +989,12 @@ class SystemDryRunService:
 
         if shutil.which("paccache") is not None:
             res = _run_capture(["paccache", "-d"], timeout=20)
+            if res.completed is None or res.completed.returncode != 0:
+                return _unverified(
+                    "sys.cache",
+                    f"{total_str} in cache; cleanup candidates not verified",
+                    "paccache -d",
+                )
             if res.completed and res.completed.returncode == 0:
                 match = re.search(
                     r"finished dry run:\s*(\d+)\s*candidates\s*\(disk space saved:\s*([^)]+)\)",
@@ -900,6 +1003,18 @@ class SystemDryRunService:
                 if match:
                     candidates = int(match.group(1))
                     saved_str = match.group(2).strip()
+                elif re.search(
+                    r"^\s*(?:==>\s*)?no candidate packages found for pruning\s*$",
+                    res.completed.stdout + "\n" + getattr(res.completed, "stderr", ""),
+                    re.MULTILINE,
+                ):
+                    candidates = 0
+                else:
+                    return _unverified(
+                        "sys.cache",
+                        f"{total_str} in cache; cleanup output not recognized",
+                        "paccache -d",
+                    )
 
         if candidates > 0 and (total_bytes > 2 * 1024**3 or candidates >= 10):
             return CheckResult(
@@ -929,12 +1044,7 @@ class SystemDryRunService:
 
     def _check_orphans(self, context: ScanContext) -> CheckResult:
         if shutil.which("pacman") is None:
-            return CheckResult(
-                check_id="sys.orphans",
-                severity=Severity.PASS,
-                message="pacman not installed",
-                remediation=None,
-            )
+            return _unverified("sys.orphans", "pacman not installed")
 
         result = _run_capture(["pacman", "-Qtdq"], timeout=15)
         if result.timed_out:
@@ -951,6 +1061,8 @@ class SystemDryRunService:
                 message="could not check orphan packages",
                 remediation="pacman -Qtdq",
             )
+        if result.completed.returncode == 1 and getattr(result.completed, "stderr", "").strip():
+            return _unverified("sys.orphans", "orphan package query failed", "pacman -Qtdq")
 
         orphans = [line.strip() for line in result.completed.stdout.splitlines() if line.strip()]
         if orphans:
@@ -996,14 +1108,10 @@ class SystemDryRunService:
 
     def _check_failed_services(self, context: ScanContext) -> CheckResult:
         if shutil.which("systemctl") is None:
-            return CheckResult(
-                check_id="sys.services",
-                severity=Severity.PASS,
-                message="systemctl not installed",
-                remediation=None,
-            )
+            return _unverified("sys.services", "systemctl not installed")
 
         failed_units: list[str] = []
+        unavailable: list[str] = []
         sys_res = _run_capture(
             ["systemctl", "--failed", "--no-legend", "--plain"],
             timeout=10,
@@ -1013,6 +1121,8 @@ class SystemDryRunService:
                 parts = line.strip().split()
                 if parts:
                     failed_units.append(parts[0])
+        else:
+            unavailable.append("system")
 
         user_res = _run_capture(
             ["systemctl", "--user", "--failed", "--no-legend", "--plain"],
@@ -1023,6 +1133,8 @@ class SystemDryRunService:
                 parts = line.strip().split()
                 if parts:
                     failed_units.append(f"{parts[0]} (user)")
+        else:
+            unavailable.append("user")
 
         if failed_units:
             count = len(failed_units)
@@ -1034,7 +1146,18 @@ class SystemDryRunService:
                 severity=Severity.FAIL,
                 message=f"{count} failed {noun} ({sample})",
                 remediation=f"systemctl status {first_unit}",
-                details={"failed_units": failed_units},
+                details={
+                    "failed_units": failed_units,
+                    "unavailable_scopes": unavailable,
+                    "verified": not unavailable,
+                },
+            )
+
+        if unavailable:
+            return _unverified(
+                "sys.services",
+                f"failed units not verified ({', '.join(unavailable)} manager unavailable)",
+                "systemctl --failed; systemctl --user --failed",
             )
 
         return CheckResult(
@@ -1047,12 +1170,7 @@ class SystemDryRunService:
 
     def _check_flatpak_unused(self, context: ScanContext) -> CheckResult:
         if shutil.which("flatpak") is None:
-            return CheckResult(
-                check_id="sys.flatpak-unused",
-                severity=Severity.PASS,
-                message="flatpak not installed",
-                remediation=None,
-            )
+            return _unverified("sys.flatpak-unused", "flatpak not installed")
 
         res = _run_capture(
             ["flatpak", "uninstall", "--unused"],
@@ -1060,11 +1178,10 @@ class SystemDryRunService:
             input_str="n\n",
         )
         if res.timed_out or res.completed is None:
-            return CheckResult(
-                check_id="sys.flatpak-unused",
-                severity=Severity.PASS,
-                message="could not check unused flatpaks",
-                remediation=None,
+            return _unverified(
+                "sys.flatpak-unused",
+                "could not check unused flatpaks",
+                "flatpak uninstall --unused",
             )
 
         runtime_lines = [
@@ -1081,6 +1198,22 @@ class SystemDryRunService:
                 details={"unused_count": count},
             )
 
+        if res.completed.returncode != 0:
+            return _unverified(
+                "sys.flatpak-unused",
+                "unused Flatpak runtime check failed",
+                "flatpak uninstall --unused",
+            )
+        if (
+            res.completed.stdout.strip()
+            and "Nothing unused to uninstall" not in res.completed.stdout
+        ):
+            return _unverified(
+                "sys.flatpak-unused",
+                "unused Flatpak runtime output not recognized",
+                "flatpak uninstall --unused",
+            )
+
         return CheckResult(
             check_id="sys.flatpak-unused",
             severity=Severity.PASS,
@@ -1091,15 +1224,18 @@ class SystemDryRunService:
 
     def _check_journal(self, context: ScanContext) -> CheckResult:
         if shutil.which("journalctl") is None:
-            return CheckResult(
-                check_id="sys.journal",
-                severity=Severity.PASS,
-                message="journalctl not installed",
-                remediation=None,
-            )
+            return _unverified("sys.journal", "journalctl not installed")
 
         res = _run_capture(["journalctl", "--disk-usage"], timeout=10)
         if res.completed and res.completed.returncode == 0:
+            if re.search(
+                r"not seeing messages|permission denied", getattr(res.completed, "stderr", ""), re.I
+            ):
+                return _unverified(
+                    "sys.journal",
+                    "journal is only partially accessible",
+                    "sudo journalctl --disk-usage",
+                )
             match = re.search(
                 r"take up\s+([\d.]+\s*[KMGT]?i?B?)\s+in",
                 res.completed.stdout,
@@ -1107,14 +1243,13 @@ class SystemDryRunService:
             )
             if match:
                 size_str = match.group(1).strip()
-                is_large = False
-                if size_str.upper().endswith("G") or size_str.upper().endswith("GIB"):
-                    num_part = re.sub(r"[^\d.]", "", size_str)
-                    try:
-                        if float(num_part) >= 4.0:
-                            is_large = True
-                    except ValueError:
-                        pass
+                value = re.fullmatch(r"([\d.]+)\s*([KMGT]?)I?B?", size_str.upper())
+                if value is None:
+                    return _unverified(
+                        "sys.journal", "unsupported journal size format", "journalctl --disk-usage"
+                    )
+                size_bytes = float(value[1]) * 1024 ** (" KMGT".index(value[2]) if value[2] else 0)
+                is_large = size_bytes >= 4 * 1024**3
 
                 return CheckResult(
                     check_id="sys.journal",
@@ -1124,11 +1259,8 @@ class SystemDryRunService:
                     details={"disk_usage": size_str},
                 )
 
-        return CheckResult(
-            check_id="sys.journal",
-            severity=Severity.PASS,
-            message="journal size normal",
-            remediation=None,
+        return _unverified(
+            "sys.journal", "journal size could not be verified", "journalctl --disk-usage"
         )
 
 
@@ -1325,25 +1457,27 @@ def _resolve_oh_my_zsh_path(context: ScanContext) -> str | None:
     return None
 
 
-def _detect_oh_my_zsh_updates(omz_path: str) -> int:
+def _detect_oh_my_zsh_updates(omz_path: str) -> int | None:
     if shutil.which("git") is None:
-        return 0
+        return None
 
     git_dir = os.path.join(omz_path, ".git")
     if not os.path.isdir(git_dir):
-        return 0
+        return None
 
-    _run_capture(["git", "-C", omz_path, "fetch", "--quiet", "origin"], timeout=30)
+    fetched = _run_capture(["git", "-C", omz_path, "fetch", "--quiet", "origin"], timeout=30)
+    if fetched.completed is None or fetched.completed.returncode != 0:
+        return None
     count_result = _run_capture(
         ["git", "-C", omz_path, "rev-list", "--count", "HEAD..origin/master"],
         timeout=30,
     )
     if count_result.completed is None or count_result.completed.returncode != 0:
-        return 0
+        return None
 
     raw = count_result.completed.stdout.strip()
     if not raw.isdigit():
-        return 0
+        return None
     return int(raw)
 
 
@@ -1355,10 +1489,16 @@ class SystemUpgradeService:
         is_online_fn: Callable[[], bool] = is_online,
         aur_helper_fn: Callable[[], str | None] = detect_aur_helper,
         snapshot_tool_fn: Callable[[], str | None] = detect_snapshot_tool,
+        config: DotDoctorConfig | None = None,
     ) -> None:
         self._is_online_fn = is_online_fn
         self._aur_helper_fn = aur_helper_fn
         self._snapshot_tool_fn = snapshot_tool_fn
+        self.config = config or DotDoctorConfig()
+        self.reinstall_packages: list[str] = []
+        self._last_step_output = ""
+        self._keyring_steps = 0
+        self._keyring_updated = False
 
     def run(self, context: ScanContext, console: Console) -> int:
         if not self._is_online_fn():
@@ -1368,7 +1508,12 @@ class SystemUpgradeService:
             )
             return 1
 
-        disk_status = detect_disk_space_status()
+        try:
+            disk_status = detect_disk_space_status()
+        except OSError as exc:
+            for line in format_status_line(STATUS_FAIL, f"Update aborted: {exc}"):
+                console.print(line)
+            return 2
         if disk_status.severity == Severity.FAIL:
             console.print(
                 f"[red]FAIL: {disk_status.message} "
@@ -1380,11 +1525,19 @@ class SystemUpgradeService:
                 f"[yellow]Warning: {disk_status.message} Proceeding with caution[/yellow]"
             )
 
+        if not self._maintenance_preflight(context, console):
+            return 2
+
         console.print("  [dim]Caching sudo credentials[/dim]")
         sudo_cache = subprocess.run(["sudo", "true"], check=False)
         if sudo_cache.returncode != 0:
             console.print("[red]Failed to cache sudo credentials. Aborting update phase.[/red]")
             return 3
+
+        # Recheck privileged readers once sudo is cached; an unprivileged WARN
+        # must not conceal a disk failure before the package transaction.
+        if not self._maintenance_preflight(context, console, frozenset({"sys.smart", "sys.btrfs"})):
+            return 2
 
         had_error = False
         any_updates = False
@@ -1402,6 +1555,16 @@ class SystemUpgradeService:
         else:
             skip_count += 1
 
+        if snap_err:
+            console.print(
+                format_sysup_summary(done=done_count, failed=fail_count, skipped=skip_count)
+            )
+            for line in format_status_line(
+                STATUS_FAIL, "Update aborted: pre-update snapshot failed"
+            ):
+                console.print(line)
+            return 2
+
         mirror_err, mirror_status = self._refresh_mirrors(console)
         had_error |= mirror_err
         if mirror_status == "done":
@@ -1410,6 +1573,13 @@ class SystemUpgradeService:
             fail_count += 1
         else:
             skip_count += 1
+
+        # Prepare a newly available keyring before the full upgrade. Never leave a
+        # synchronized database behind and proceed with unrelated package installs.
+        if not self._prepare_keyring(console):
+            return 2
+        done_count += self._keyring_steps
+        any_updates |= self._keyring_updated
 
         aur_helper = self._aur_helper_fn()
         update_cmd: list[str] | None = None
@@ -1435,9 +1605,24 @@ class SystemUpgradeService:
             update_title = "System update (pacman)"
 
         if update_cmd is not None:
+            if self.reinstall_packages:
+                update_cmd += ["--", *self.reinstall_packages]
             aur_error, is_net_failure, aur_updated = self._run_step(
                 update_cmd, console, update_title
             )
+            if aur_error and re.search(
+                r"marginal trust|unknown trust|unknown public key|"
+                r"invalid or corrupted package.*signature",
+                self._last_step_output,
+                re.I,
+            ):
+                if not self._prepare_keyring(console, force=True):
+                    return 2
+                done_count += self._keyring_steps
+                any_updates |= self._keyring_updated
+                aur_error, is_net_failure, aur_updated = self._run_step(
+                    update_cmd, console, f"{update_title} (retry after keyring update)"
+                )
             if aur_error and is_net_failure:
                 console.print(
                     "[yellow]Mirror or network failure detected. "
@@ -1467,6 +1652,17 @@ class SystemUpgradeService:
             elif aur_error:
                 had_error = True
                 fail_count += 1
+                if created_snap:
+                    command = (
+                        "sudo snapper rollback or select snapshot in bootloader"
+                        if created_snap == "snapper"
+                        else "sudo timeshift --restore"
+                    )
+                    console.print(f"  [dim]Rollback available: {command}[/dim]")
+                console.print(
+                    format_sysup_summary(done=done_count, failed=fail_count, skipped=skip_count)
+                )
+                return 2
             else:
                 done_count += 1
                 if aur_updated:
@@ -1587,7 +1783,12 @@ class SystemUpgradeService:
                 console.print(line_text)
             skip_count += 1
 
-        pacnew_files = detect_pacnew_files()
+        try:
+            pacnew_files = detect_pacnew_files()
+        except OSError:
+            pacnew_files = []
+            for line in format_status_line("WARN", "configuration files could not be verified"):
+                console.print(line)
         if pacnew_files:
             console.print(
                 f"\n[bold yellow]Note: {len(pacnew_files)} .pacnew "
@@ -1599,6 +1800,20 @@ class SystemUpgradeService:
                 "[yellow]Run 'pacdiff' to review and merge configuration updates.[/yellow]"
             )
 
+        postflight = MaintenanceChecks(self.config).run(context, POSTFLIGHT_IDS)
+        for result in postflight:
+            if result.severity != Severity.PASS:
+                for line in format_status_line(
+                    result.severity.value if result.severity != Severity.OUTD else "OLD",
+                    result.message,
+                ):
+                    console.print(line)
+            if result.check_id == "sys.rebuild" and result.details.get("rebuild_packages"):
+                if not self._offer_rebuilds(result, context, console):
+                    had_error = True
+                    fail_count += 1
+        if any(r.severity == Severity.FAIL for r in postflight):
+            had_error = True
         console.print()
         console.print(format_sysup_summary(done=done_count, failed=fail_count, skipped=skip_count))
         if not had_error:
@@ -1624,6 +1839,135 @@ class SystemUpgradeService:
                 f"[yellow]{reboot_status.reason}[/yellow]"
             )
         return 2 if had_error else 0
+
+    def _maintenance_preflight(
+        self, context: ScanContext, console: Console, ids: frozenset[str] = PREFLIGHT_IDS
+    ) -> bool:
+        checks = MaintenanceChecks(self.config).run(context, ids)
+        has_blocking = any(r.details.get("blocks_upgrade") for r in checks)
+        for result in checks:
+            if result.severity == Severity.PASS:
+                continue
+            for line in format_status_line(result.severity.value, result.message):
+                console.print(line)
+            if result.check_id == "sys.news":
+                notices = result.details.get("notices", [])
+                for item in notices:
+                    console.print(f'        {item["title"]}\n        {item["url"]}', markup=False)
+                if not has_blocking:
+                    prompt = (
+                        "Have you read these notices and completed any required steps?"
+                        if notices
+                        else "Arch notices could not be verified. Continue without reviewing them?"
+                    )
+                    if not self._confirm(prompt):
+                        return False
+                    if notices:
+                        try:
+                            MaintenanceState().acknowledge_news([n["url"] for n in notices])
+                        except (OSError, ValueError) as exc:
+                            for line in format_status_line(
+                                "FAIL", f"Could not save reviewed notices: {exc}"
+                            ):
+                                console.print(line)
+                            return False
+            else:
+                items = result.details.get("items") or result.details.get("packages")
+                if items and isinstance(items, list):
+                    for item in items:
+                        console.print(f"        [dim]• {escape(str(item))}[/dim]")
+            if result.check_id != "sys.news" and result.remediation:
+                console.print(f"        [dim]fix: {escape(str(result.remediation))}[/dim]")
+
+        if has_blocking:
+            blocking_ids = [r.check_id for r in checks if r.details.get("blocks_upgrade")]
+            noun = "check" if len(blocking_ids) == 1 else "checks"
+            blocked_str = ", ".join(f"'{cid}'" for cid in blocking_ids)
+            console.print(
+                f"\n  [bold red]FAIL: Upgrade aborted — "
+                f"critical preflight {noun} {blocked_str} failed.[/bold red]\n"
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _confirm(prompt: str) -> bool:
+        try:
+            return typer.confirm(prompt, default=False)
+        except (typer.Abort, EOFError):
+            return False
+
+    def _prepare_keyring(self, console: Console, force: bool = False) -> bool:
+        self._keyring_steps = 0
+        self._keyring_updated = False
+        if "sys.keyring" in {cid.replace(":", ".") for cid in self.config.disabled_checks}:
+            return True
+        if not shutil.which("pacman"):
+            return True
+        if not force and not shutil.which("checkupdates"):
+            return True
+        try:
+            keyrings = self.config.maintenance.keyring_packages
+            if not force:
+                result = capture(["checkupdates"], 60)
+                if result.returncode not in {0, 2}:
+                    return True  # The full upgrade will report repository failures.
+                available = {line.split()[0] for line in result.stdout.splitlines() if line.split()}
+                keyrings = [p for p in keyrings if p in available]
+            if not keyrings:
+                return True
+            if any(not PACKAGE_RE.fullmatch(p) for p in keyrings):
+                return False
+            err, _, updated = self._run_step(
+                ["sudo", "pacman", "-Sy", "--needed", *keyrings],
+                console,
+                "Package signing key update",
+            )
+            if err:
+                return False
+            self._keyring_steps += 1
+            self._keyring_updated |= updated
+            err, _, updated = self._run_step(
+                ["sudo", "pacman", "-Su"], console, "Complete system upgrade after key update"
+            )
+            if not err:
+                self._keyring_steps += 1
+                self._keyring_updated |= updated
+            return not err
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    def _offer_rebuilds(self, result: CheckResult, context: ScanContext, console: Console) -> bool:
+        helper = self._aur_helper_fn()
+        if helper not in {"paru", "yay"}:
+            return True
+        successful = True
+        for package in result.details["rebuild_packages"]:
+            if not PACKAGE_RE.fullmatch(package) or package.endswith("-bin"):
+                continue
+            if self._confirm(f"Review and rebuild {package} to check library compatibility?"):
+                rebuild_flags = ["--rebuild", "yes"] if helper == "paru" else ["--rebuild"]
+                error, _, _ = self._run_step(
+                    [helper, "-S", *rebuild_flags, "--", package], console, f"Rebuild {package}"
+                )
+                if not error:
+                    refreshed = MaintenanceChecks(self.config).run(
+                        context, frozenset({"sys.rebuild"})
+                    )
+                    if (
+                        not refreshed
+                        or refreshed[0].details.get("verified") is False
+                        or refreshed[0].severity == Severity.FAIL
+                        or package in refreshed[0].details.get("rebuild_packages", [])
+                    ):
+                        for line in format_status_line(
+                            "WARN", f"{package} still has compatibility findings"
+                        ):
+                            console.print(line)
+                        successful = False
+                else:
+                    successful = False
+        return successful
 
     def _create_pre_update_snapshot(self, console: Console) -> tuple[bool, str, str | None]:
         console_width = getattr(console, "width", 80) or 80
@@ -1790,9 +2134,18 @@ class SystemUpgradeService:
             and not os.environ.get("NO_ANIMATION")
             and not os.environ.get("DOTDOCTOR_NO_ANIMATION")
         )
+        needs_input = (
+            any(name in command for name in {"pacman", "yay", "paru"})
+            and any(flag in command for flag in {"-Sy", "-Su", "-S"})
+            and "--noconfirm" not in command
+        )
         completed: Any
         try:
-            if (
+            if needs_input:
+                # Pacman/AUR review prompts must remain visible and retain stdin.
+                # A pipe reader can hide a prompt without a newline and deadlock.
+                completed = subprocess.run(command, check=False)
+            elif (
                 is_interactive
                 and hasattr(console, "status")
                 and subprocess.run is _ORIGINAL_SUBPROCESS_RUN
@@ -1821,6 +2174,7 @@ class SystemUpgradeService:
         stderr_output = (getattr(completed, "stderr", "") or "").strip()
         stdout_output = (getattr(completed, "stdout", "") or "").strip()
         combined_output = f"{stdout_output}\n{stderr_output}".strip()
+        self._last_step_output = combined_output
         is_net_failure = _is_mirror_failure(combined_output)
 
         if completed.returncode != 0:
@@ -1847,7 +2201,7 @@ class SystemUpgradeService:
                         console.print(f"[dim]{p}{w}[/dim]")
             return True, is_net_failure, False
 
-        had_updates = _detect_step_updates(command, stdout_output, stderr_output)
+        had_updates = needs_input or _detect_step_updates(command, stdout_output, stderr_output)
         for line_text in format_status_line(STATUS_DONE, title, width=console_width):
             console.print(line_text)
         return False, False, had_updates

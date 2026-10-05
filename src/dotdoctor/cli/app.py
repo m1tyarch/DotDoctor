@@ -19,17 +19,17 @@ from dotdoctor.application.system_update import (
     SystemDryRunService,
     SystemUpgradeService,
 )
-from dotdoctor.cli.render import render_terminal_report
+from dotdoctor.cli.render import format_check_status, render_terminal_report
 from dotdoctor.cli.theme import (
     GAP,
     INDENT,
-    STATUS_DONE,
+    STATUS_SKIP,
     STATUS_WIDTH,
-    STYLE_DONE,
+    STYLE_SKIP,
     format_header,
 )
 from dotdoctor.domain.context import ScanContext
-from dotdoctor.domain.models import ScanReport, Severity
+from dotdoctor.domain.models import CheckResult, ScanReport, Severity
 from dotdoctor.infrastructure.config_loader import ConfigError, load_config
 
 
@@ -158,21 +158,34 @@ def _run_tasks_with_progress(
     include_checks: frozenset[str] | None,
     console: Console,
 ) -> ScanReport:
-    states: dict[str, str] = {task.check_id: "running" for task in tasks}
+    results: dict[str, CheckResult | None] = {}
+    spinners = {task.check_id: Spinner("dots") for task in tasks}
+    id_width = max((len(task.check_id) for task in tasks), default=0)
 
     def _build_steps_table() -> Table:
-        grid = Table.grid(expand=False)
-        grid.add_column()
-        grid.add_column(width=STATUS_WIDTH)
-        grid.add_column()
-        grid.add_column()
+        grid = Table.grid(expand=True, padding=0)
+        grid.add_column(width=len(INDENT))
+        grid.add_column(width=STATUS_WIDTH, no_wrap=True)
+        grid.add_column(width=len(GAP))
+        grid.add_column(width=id_width, no_wrap=True, overflow="ellipsis")
+        grid.add_column(width=len(GAP))
+        grid.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
         for task in tasks:
             st_renderable: Text | Spinner
-            if states[task.check_id] == "done":
-                st_renderable = Text(STATUS_DONE, style=STYLE_DONE)
+            result = results.get(task.check_id)
+            if result is not None:
+                st_renderable = format_check_status(result)
+                message = Text(
+                    " ".join(result.message.split()),
+                    style="dim" if result.severity == Severity.PASS else "",
+                )
+            elif task.check_id in results:
+                st_renderable = Text(STATUS_SKIP, style=STYLE_SKIP)
+                message = Text("no result reported", style="dim")
             else:
-                st_renderable = Spinner("dots")
-            grid.add_row(INDENT, st_renderable, GAP, task.label)
+                st_renderable = spinners[task.check_id]
+                message = Text(" ".join(task.label.split()))
+            grid.add_row(INDENT, st_renderable, GAP, Text(task.check_id), GAP, message)
         return grid
 
     is_interactive = (
@@ -191,41 +204,24 @@ def _run_tasks_with_progress(
             refresh_per_second=12.5,
         ) as live:
 
-            def _mark_done(check_id: str) -> None:
-                states[check_id] = "done"
-                live.update(_build_steps_table())
+            def _show_result(check_id: str, result: CheckResult | None) -> None:
+                results[check_id] = result
+                live.update(_build_steps_table(), refresh=True)
 
-            try:
-                return service.run_with_progress(
-                    context,
-                    on_task_complete=_mark_done,
-                    disabled_checks=all_disabled,
-                    include_checks=include_checks,
-                )
-            except TypeError:
-                try:
-                    return service.run_with_progress(
-                        context,
-                        on_task_complete=_mark_done,
-                        disabled_checks=all_disabled,
-                    )
-                except TypeError:
-                    try:
-                        return service.run_with_progress(context, on_task_complete=_mark_done)
-                    except TypeError:
-                        return service.run_with_progress(context)
-    else:
-        try:
             return service.run_with_progress(
                 context,
+                on_task_result=_show_result,
                 disabled_checks=all_disabled,
                 include_checks=include_checks,
+                tasks=tasks,
             )
-        except TypeError:
-            try:
-                return service.run_with_progress(context, disabled_checks=all_disabled)
-            except TypeError:
-                return service.run_with_progress(context)
+    else:
+        return service.run_with_progress(
+            context,
+            disabled_checks=all_disabled,
+            include_checks=include_checks,
+            tasks=tasks,
+        )
 
 
 def _system_fix_impl(
@@ -255,7 +251,8 @@ def _system_fix_impl(
     console.print(format_header("fix"))
     console.print()
 
-    service = SystemDryRunService()
+    loaded_cfg = loaded_cfg.model_copy(update={"disabled_checks": all_disabled})
+    service = SystemDryRunService(config=loaded_cfg)
     tasks = service.build_tasks(
         context,
         disabled_checks=all_disabled,
@@ -286,7 +283,7 @@ def _system_fix_impl(
     render_terminal_report(issues_report, console, print_header=False, verbose=verbose)
     console.print()
 
-    fixer = InteractiveAutoFixer(console)
+    fixer = InteractiveAutoFixer(console, config=loaded_cfg)
     report = fixer.apply(report, context)
 
     if json_output is not None:
@@ -323,7 +320,8 @@ def _system_upgrade_impl(
     console.print(format_header("system update"))
     console.print()
 
-    service = SystemDryRunService()
+    loaded_cfg = loaded_cfg.model_copy(update={"disabled_checks": all_disabled})
+    service = SystemDryRunService(config=loaded_cfg)
     tasks = service.build_tasks(
         context,
         disabled_checks=all_disabled,
@@ -342,8 +340,18 @@ def _system_upgrade_impl(
     has_fails = any(r.severity == Severity.FAIL for r in report.results)
 
     if not has_updates and not has_fails:
-        console.print("  [dim green]PASS[/dim green]  All packages and components are up to date.")
-        console.print("\n[dim]Nothing to update.[/dim]")
+        warnings = [r for r in report.results if r.severity == Severity.WARN]
+        if warnings:
+            render_terminal_report(
+                ScanReport(profile="system", results=warnings),
+                console,
+                print_header=False,
+                verbose=verbose,
+            )
+            console.print("\n[dim]No updates reported; review the findings above.[/dim]")
+        else:
+            console.print("  [dim green]PASS[/dim green]  No updates reported by enabled checks.")
+            console.print("\n[dim]Nothing to update.[/dim]")
         raise typer.Exit(code=0)
 
     # Show outdated or failed checks
@@ -370,7 +378,7 @@ def _system_upgrade_impl(
     if has_fails and not has_updates:
         raise typer.Exit(code=2)
 
-    upgrade_service = SystemUpgradeService()
+    upgrade_service = SystemUpgradeService(config=loaded_cfg)
     code = upgrade_service.run(context, console)
     raise typer.Exit(code=code)
 
@@ -402,7 +410,8 @@ def _system_dry_run_impl(
     console.print(format_header(context.profile))
     console.print()
 
-    service = SystemDryRunService()
+    loaded_cfg = loaded_cfg.model_copy(update={"disabled_checks": all_disabled})
+    service = SystemDryRunService(config=loaded_cfg)
     tasks = service.build_tasks(context, disabled_checks=all_disabled)
     report = _run_tasks_with_progress(
         service,
@@ -434,16 +443,22 @@ def _system_dry_run_impl(
             console.print()
             console.print(format_header("system update"))
             console.print()
-            upgrade_service = SystemUpgradeService()
-            upgrade_service.run(context, console)
+            upgrade_service = SystemUpgradeService(config=loaded_cfg)
+            upgrade_code = upgrade_service.run(context, console)
+            if upgrade_code:
+                if json_output is not None:
+                    json_output.parent.mkdir(parents=True, exist_ok=True)
+                    json_output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+                raise typer.Exit(code=upgrade_code)
             # Re-evaluate report after system update
             report = service.run(context, disabled_checks=all_disabled)
             has_issues = any(r.severity in {Severity.WARN, Severity.FAIL} for r in report.results)
 
     if has_issues:
-        console.print()
-        if _safe_confirm("Apply fixes for detected issues now?", default=True):
-            fixer = InteractiveAutoFixer(console)
+        fixer = InteractiveAutoFixer(console, config=loaded_cfg)
+        if any(fixer.can_fix(result) for result in report.results) and _safe_confirm(
+            "Apply fixes for detected issues now?", default=True
+        ):
             report = fixer.apply(report, context)
 
     if json_output is not None:

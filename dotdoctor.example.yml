@@ -14,4 +14,42 @@
 #   sys.pacnew          - .pacnew configuration files
 #   sys.services        - Failed systemd units
 #   sys.journal         - Systemd journal size
+#   sys.keyring         - Signing keyring files and synchronized clock
+#   sys.news            - Unread Arch upgrade notices
+#   sys.backup          - Configured backup job and verified copy freshness
+#   sys.timers          - Expected timers and their last successful jobs
+#   sys.trim            - Periodic TRIM or continuous discard
+#   sys.smart           - Physical storage SMART health (cached sudo only)
+#   sys.btrfs           - Device error counters and scrub freshness
+#   sys.mounts          - Capacity, read-only mounts, and available inodes
+#   sys.security        - Known vulnerabilities from Arch Security Tracker
+#   sys.package-db      - Local pacman database consistency
+#   sys.integrity       - Missing installed package files (not file hashes)
+#   sys.rebuild         - Foreign package library compatibility
 disabled_checks: []
+
+maintenance:
+  # Add your distribution's keyring package when needed.
+  keyring_packages: [archlinux-keyring]
+  scrub_max_age_days: 30
+  integrity_timeout_seconds: 60
+  # tmpfiles-clean and Arch WKD timers are checked automatically.
+  timers: []
+  # Example of an additional expected timer:
+  # timers:
+  #   - unit: backup.timer
+  #     scope: user
+  #     max_age_days: 7
+
+  # An absent backup is reported as WARN, without blocking upgrades.
+  backup: null
+  # Connect an EXISTING backup job; DotDoctor does not create backup repositories.
+  # backup:
+  #   service: backup.service
+  #   scope: user
+  #   max_age_days: 7
+  #   required_before_upgrade: true
+  #   status_command: [/home/you/bin/backup-status]
+  # The read-only adapter must query the backup destination and output JSON:
+  # {"completed_at": "2026-10-05T12:00:00+02:00", "verified": true}
+  # verified=true means the tool verified a completed copy, not just a job start.

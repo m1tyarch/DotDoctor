@@ -15,7 +15,7 @@ from dotdoctor.cli.theme import (
     STYLE_WARN,
     format_header,
 )
-from dotdoctor.domain.models import ScanReport, Severity
+from dotdoctor.domain.models import CheckResult, ScanReport, Severity
 
 
 def _status_label(severity: Severity) -> str:
@@ -33,6 +33,10 @@ def _status_label(severity: Severity) -> str:
 def _status_style(severity: Severity) -> str:
     label = _status_label(severity)
     return STATUS_STYLES.get(label, STYLE_DEFAULT)
+
+
+def format_check_status(result: CheckResult) -> Text:
+    return Text(_status_label(result.severity), style=_status_style(result.severity))
 
 
 def format_summary(
@@ -133,7 +137,12 @@ def render_terminal_report(
             cont_line.append(extra_line, style=msg_style)
             console.print(cont_line)
 
-        packages = result.details.get("packages") if result.details else None
+        packages = (
+            result.details.get("items") or result.details.get("packages")
+            if result.details
+            else None
+        )
+        item_noun = "item" if result.details.get("items") else "package"
         critical = result.details.get("critical") if result.details else None
         if packages and isinstance(packages, list) and result.severity != Severity.PASS:
             to_show: list[str] = []
@@ -161,7 +170,7 @@ def render_terminal_report(
 
             if len(packages) > len(to_show) and not verbose:
                 omitted = len(packages) - len(to_show)
-                noun = "package" if omitted == 1 else "packages"
+                noun = item_noun if omitted == 1 else f"{item_noun}s"
                 omit_line = Text(indent_spaces)
                 omit_line.append(f"• ({omitted} more {noun}, use -v to show all)", style="dim")
                 console.print(omit_line)

@@ -9,7 +9,7 @@ runner = CliRunner()
 
 
 def test_root_default_runs_dry_run_report(monkeypatch) -> None:
-    def fake_run(self, context, on_task_complete=None):
+    def fake_run(self, context, on_task_complete=None, **kwargs):
         if on_task_complete:
             on_task_complete("sys.packages")
         return ScanReport(
@@ -107,7 +107,7 @@ def test_root_sysup_when_no_updates_exits_early(monkeypatch) -> None:
 def test_root_fix_runs_system_auto_fix(monkeypatch) -> None:
     called_fix = []
 
-    def fake_run(self, context, on_task_complete=None):
+    def fake_run(self, context, on_task_complete=None, **kwargs):
         return ScanReport(
             profile="system",
             results=[
@@ -188,7 +188,7 @@ def test_root_conflicting_options() -> None:
 def test_root_prompts_update_everything_when_outd(monkeypatch) -> None:
     upgraded = []
 
-    def fake_run(self, context, on_task_complete=None):
+    def fake_run(self, context, on_task_complete=None, **kwargs):
         return ScanReport(
             profile="system",
             results=[
@@ -222,7 +222,7 @@ def test_root_prompts_update_everything_when_outd(monkeypatch) -> None:
 def test_root_prompts_fixes_when_issues_detected(monkeypatch) -> None:
     fixed = []
 
-    def fake_run(self, context, on_task_complete=None):
+    def fake_run(self, context, on_task_complete=None, **kwargs):
         return ScanReport(
             profile="system",
             results=[
@@ -253,7 +253,7 @@ def test_root_prompts_fixes_when_issues_detected(monkeypatch) -> None:
 def test_root_chains_updates_and_fixes(monkeypatch) -> None:
     actions = []
 
-    def fake_run(self, context, on_task_complete=None):
+    def fake_run(self, context, on_task_complete=None, **kwargs):
         return ScanReport(
             profile="system",
             results=[
@@ -294,7 +294,7 @@ def test_root_chains_updates_and_fixes(monkeypatch) -> None:
 
 
 def test_root_critical_update_warning(monkeypatch) -> None:
-    def fake_run(self, context):
+    def fake_run(self, context, **kwargs):
         return ScanReport(
             profile="system",
             results=[
@@ -322,7 +322,7 @@ def test_root_critical_update_warning(monkeypatch) -> None:
 def test_root_verbose_shows_all_packages(monkeypatch) -> None:
     pkgs = [f"pkg{i} 1.0 -> 1.1" for i in range(5)]
 
-    def fake_run(self, context):
+    def fake_run(self, context, **kwargs):
         return ScanReport(
             profile="system",
             results=[
@@ -356,7 +356,7 @@ def test_root_verbose_shows_all_packages(monkeypatch) -> None:
 def test_root_disable_check(monkeypatch) -> None:
     captured_disabled = []
 
-    def fake_run(self, context, on_task_complete=None, disabled_checks=None):
+    def fake_run(self, context, on_task_complete=None, disabled_checks=None, **kwargs):
         captured_disabled.append(disabled_checks)
         return ScanReport(profile="system", results=[])
 
@@ -376,7 +376,7 @@ def test_root_with_config_file(monkeypatch, tmp_path: Path) -> None:
 
     captured_disabled = []
 
-    def fake_run(self, context, on_task_complete=None, disabled_checks=None):
+    def fake_run(self, context, on_task_complete=None, disabled_checks=None, **kwargs):
         captured_disabled.append(disabled_checks)
         return ScanReport(profile="system", results=[])
 
@@ -391,7 +391,7 @@ def test_root_with_config_file(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_root_json_output(monkeypatch, tmp_path: Path) -> None:
-    def fake_run(self, context, on_task_complete=None):
+    def fake_run(self, context, on_task_complete=None, **kwargs):
         return ScanReport(
             profile="system",
             results=[
@@ -419,7 +419,7 @@ def test_root_refreshes_report_after_sysup(monkeypatch) -> None:
     call_count = [0]
     fixed_applied = []
 
-    def fake_run_progress(self, context, on_task_complete=None):
+    def fake_run_progress(self, context, on_task_complete=None, **kwargs):
         return ScanReport(
             profile="system",
             results=[

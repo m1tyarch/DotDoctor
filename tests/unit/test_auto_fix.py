@@ -233,9 +233,9 @@ def test_fix_sys_services(monkeypatch, tmp_path: Path) -> None:
     )
     outcome = fixer._fix_sys_services(context, result)
 
-    assert outcome.changed is True
-    assert outcome.note == "Reset failed systemd services."
-    assert commands == [["systemctl", "reset-failed"], ["systemctl", "--user", "reset-failed"]]
+    assert outcome.changed is False
+    assert "resolve the cause" in outcome.note
+    assert commands == []
 
 
 def test_fix_sys_disk(monkeypatch, tmp_path: Path) -> None:
@@ -270,6 +270,13 @@ def test_interactive_auto_fixer_apply_skips_outd_and_prompts_warn(
 ) -> None:
     context = _context(tmp_path)
     fixer = InteractiveAutoFixer(Console())
+    monkeypatch.setattr(
+        fixer,
+        "_verify",
+        lambda result, ctx: CheckResult(
+            check_id=result.check_id, severity=Severity.PASS, message="No orphan packages."
+        ),
+    )
 
     prompts = []
 
@@ -348,6 +355,13 @@ def test_apply_uses_status_spinner_when_terminal(monkeypatch, tmp_path: Path) ->
     console = Console()
     monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
     fixer = InteractiveAutoFixer(console)
+    monkeypatch.setattr(
+        fixer,
+        "_verify",
+        lambda result, ctx: CheckResult(
+            check_id=result.check_id, severity=Severity.PASS, message="No orphan packages."
+        ),
+    )
 
     status_called = []
 

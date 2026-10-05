@@ -59,6 +59,8 @@ def test_system_dry_run_marks_outd_when_updates_detected(monkeypatch, tmp_path: 
             return SimpleNamespace(stdout="1.2.3 -> 1.2.4\n", returncode=0)
         if command[:2] in (["yay", "-Qua"], ["paru", "-Qua"]):
             return SimpleNamespace(stdout="aur/pkg-a 1.0-1 2.0-1\n", returncode=0)
+        if "rev-list" in command:
+            return SimpleNamespace(stdout="0\n", returncode=0)
         return SimpleNamespace(stdout="", returncode=0)
 
     monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", fake_which)
@@ -83,7 +85,7 @@ def test_system_dry_run_marks_outd_when_updates_detected(monkeypatch, tmp_path: 
         ),
     )
 
-    (tmp_path / ".oh-my-zsh").mkdir()
+    (tmp_path / ".oh-my-zsh" / ".git").mkdir(parents=True)
     report = service.run(_context(tmp_path))
 
     by_id = {item.check_id: item for item in report.results}
@@ -319,7 +321,7 @@ def test_check_aur_detects_flagged_packages(monkeypatch, tmp_path: Path) -> None
     assert by_id["sys.aur"].details["updates"] == 1
 
 
-def test_check_arch_timeout_produces_fail(monkeypatch, tmp_path: Path) -> None:
+def test_check_arch_timeout_produces_unverified_warning(monkeypatch, tmp_path: Path) -> None:
     service = SystemDryRunService()
 
     def fake_which(name: str) -> str | None:
@@ -335,7 +337,8 @@ def test_check_arch_timeout_produces_fail(monkeypatch, tmp_path: Path) -> None:
 
     report = service.run(_context(tmp_path))
     by_id = {item.check_id: item for item in report.results}
-    assert by_id["sys.packages"].severity is Severity.FAIL
+    assert by_id["sys.packages"].severity is Severity.WARN
+    assert by_id["sys.packages"].details["verified"] is False
 
 
 def test_system_upgrade_network_failure_triggers_mirror_recovery(
@@ -616,6 +619,10 @@ def test_is_online_failure(monkeypatch) -> None:
 
 
 def test_system_dry_run_offline_skips_network_checks(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(stdout="", stderr="", returncode=0),
+    )
     service = SystemDryRunService(is_online_fn=lambda: False)
 
     monkeypatch.setattr(
@@ -1328,6 +1335,17 @@ def test_system_dry_run_disabled_checks_via_env(monkeypatch, tmp_path: Path) -> 
     task_ids = {t.check_id for t in tasks}
     assert "sys.packages" not in task_ids
     assert "sys.cache" not in task_ids
+
+
+def test_system_dry_run_firmware_omitted_when_not_installed(monkeypatch, tmp_path: Path) -> None:
+    service = SystemDryRunService()
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.shutil.which",
+        lambda n: None if n == "fwupdmgr" else f"/usr/bin/{n}",
+    )
+    tasks = service.build_tasks(_context(tmp_path))
+    task_ids = {t.check_id for t in tasks}
+    assert "sys.firmware" not in task_ids
 
 
 def test_system_dry_run_remediations_have_no_run_prefix(monkeypatch, tmp_path: Path) -> None:
