@@ -7,8 +7,8 @@ Key Features
 ------------
 
 - **Parallel System Diagnostics & Dry-Run** (`dotdoctor`): Fast parallel audit of Arch/AUR packages, Flatpaks, firmware, Oh-My-Zsh, orphan packages, pacman cache, `.pacnew` files, disk space, and failed systemd units.
-- **Sequential System Upgrade** (`dotdoctor --sysup`): Complete, safe update flow with pre-update snapshot (Snapper / Timeshift), mirror refresh, package/AUR updates, Flatpak updates, unused runtime pruning, cache cleanup, Oh-My-Zsh, and firmware checks.
-- **Interactive Auto-Fix** (`dotdoctor --fix`): Clean up detected system hygiene findings (orphan packages, pacman cache, unused Flatpak runtimes) safely with interactive confirmation.
+- **Sequential System Upgrade** (`dotdoctor --sysup`): Sequential update flow with preflight checks, a pre-update snapshot when Snapper / Timeshift is configured, mirror refresh when supported, package/AUR updates, Flatpak updates, unused runtime pruning, cache cleanup, Oh-My-Zsh, and firmware updates.
+- **Interactive Auto-Fix** (`dotdoctor --fix`): Review hygiene findings and confirm supported actions individually: cache/runtime cleanup, orphan removal, configuration merging, journal cleanup, TRIM, timers, backups, overdue Btrfs scrubs, package reinstallation, or reboot.
 - **Zero Visual Noise**: Minimalist 2-space terminal design, clear status tokens (`PASS`, `WARN`, `FAIL`, `OLD`, `DONE`, `SKIP`), and honest reporting.
 - **Cancellable Audits**: Ctrl+C stops diagnostic commands and their process groups,
   restores the cursor, and exits with code `130`. Cancelling a scan does not start fixes.
@@ -22,8 +22,8 @@ System Update Safety Model
 --------------------------
 
 Each scan builds one task plan for both progress and execution. Failed commands,
-timeouts, inaccessible managers, and unsupported output report an unverified result
-instead of PASS. A detected failed service remains FAIL even if another manager
+timeouts, inaccessible managers, and unsupported output produce a finding rather
+than PASS. A detected failed service remains FAIL even if another manager
 cannot be queried. Read-only command cancellation is scoped to the audit; upgrade
 transactions and interactive fixes use their existing execution paths.
 
@@ -31,7 +31,8 @@ transactions and interactive fixes use their existing execution paths.
 - Strict subprocess exit code handling (`pacman`, `yay`/`paru`, `flatpak`, `fwupdmgr`).
 - Distinguishes AUR out-of-date flagged packages from installable updates.
 - Mirror fallback is attempted when package sync fails with mirror/network symptoms.
-- Fatal update failures terminate cleanly with exit code `1`.
+- Connectivity and unrecovered mirror failures return `1`; other failed or blocked
+  upgrade steps return `2`. See the exit-code table below.
 - A failed pre-update snapshot or blocking maintenance finding aborts the update.
 - Unread Arch notices require explicit confirmation (default: no); acceptance is
   stored in `$XDG_STATE_HOME/dotdoctor/maintenance.json`, or
@@ -42,7 +43,7 @@ transactions and interactive fixes use their existing execution paths.
   `pacman -Su`; failures stop the remaining workflow.
 - Read-only privileged checks use `sudo -n` and never prompt for a password. Storage
   checks run again after sudo credentials are cached, before any upgrade transaction.
-- Package integrity, database consistency, vulnerabilities, and rebuild findings are
+- Missing package files, database consistency, vulnerabilities, and rebuild findings are
   checked again after updating. A confirmed rebuild is checked again afterward.
 
 Requirements
@@ -71,13 +72,13 @@ Using local repository:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .
+python -m pip install -e .
 ```
 
 Install dev dependencies:
 
 ```bash
-pip install -e .[dev]
+python -m pip install -e '.[dev]'
 ```
 
 Usage
@@ -91,6 +92,15 @@ Run parallel system diagnostic checks:
 dotdoctor
 ```
 
+The audit starts without changing packages or starting repairs. After reporting,
+the default command can offer an update and supported fixes; these start only
+after confirmation. The initial update/fix prompts default to yes, so read them
+before pressing Enter. EOF declines these prompts; redirected input can still
+accept actions if it supplies an affirmative answer.
+
+The current CLI has three modes and the `version` subcommand. The former `scan`,
+`--env`, `--profile`, `python-dev`, and `cpp-dev` interfaces are no longer supported.
+
 Show expanded details (e.g. all available update package versions):
 
 ```bash
@@ -102,6 +112,14 @@ Export report to JSON:
 ```bash
 dotdoctor --json-output report.json
 ```
+
+JSON export is implemented for the default command and `--fix`, and contains the
+latest scan/fix report. Successful accepted updates are followed by a new scan;
+if an accepted update fails, the default command exports its pre-update report
+and returns the update failure code. `--sysup` does not export a JSON report.
+JSON uses `profile: system` and `results` with `check_id`, `severity`, `message`,
+`remediation`, and `details`; the terminal token `OLD` is serialized as `OUTD`.
+See the illustrative [example report](artifacts/example-report.json).
 
 Disable specific checks:
 
@@ -131,9 +149,16 @@ Configuration
 DotDoctor supports YAML-based configuration for disabling checks.
 
 - Example file: `dotdoctor.example.yml`
-- Default resolution: `$XDG_CONFIG_HOME/dotdoctor/config.yml` or `~/.config/dotdoctor/config.yml`
-- Override path: `--config /path/to/config.yml`
-- Environment variable: `DOTDOCTOR_DISABLE_CHECKS=sys.firmware,sys.shell-omz`
+- Configuration selection, in order: explicit `--config`, `DOTDOCTOR_CONFIG`,
+  then the first existing file from `./dotdoctor.yml`, `./dotdoctor.yaml`,
+  `$XDG_CONFIG_HOME/dotdoctor/config.yml`, and `config.yaml` in that directory.
+  When `XDG_CONFIG_HOME` is unset, the directory is `~/.config/dotdoctor`.
+- With no configuration file, built-in defaults apply. A selected nonexistent
+  path also currently falls back to defaults.
+- `DOTDOCTOR_DISABLE_CHECKS=sys.firmware,sys.shell-omz` adds to YAML exclusions;
+  repeated `--disable-check` options add exclusions for the current invocation.
+- YAML also configures maintenance intervals, expected timers, and an existing
+  backup adapter.
 
 Example configuration:
 
@@ -148,12 +173,17 @@ disabled_checks:
 `dotdoctor.example.yml` documents the `maintenance` section. Existing configurations
 with only `disabled_checks` continue to work. The three CLI modes are unchanged.
 
-The default scan includes new `sys.keyring`, `sys.news`, `sys.backup`, `sys.timers`,
+The default audit includes `sys.keyring`, `sys.news`, `sys.backup`, `sys.timers`,
 `sys.trim`, `sys.smart`, `sys.btrfs`, `sys.mounts`, `sys.security`,
 `sys.package-db`, `sys.integrity`, and `sys.rebuild` checks when applicable.
-Missing optional tools or insufficient permissions produce WARN, not a health PASS.
-Disabling a check also disables its upgrade gate; this is an explicit coverage override,
-not a request to omit an entire package manager from the upgrade.
+Checks are registered according to available tools. For example, `sys.security`
+is included only when pacman and arch-audit are installed; `sys.smart` requires
+lsblk and smartctl. An omitted check provides no health or security coverage.
+An included check that cannot read or verify its data reports WARN or FAIL.
+Disabling a maintenance check also removes it from pre/postflight checks; this is
+an explicit coverage override. Separate upgrade guards for connectivity and
+root/boot disk space still run. Disabling a package-manager audit does not omit
+that package manager's update transaction.
 
 Reboot detection (`sys.reboot`) compares the running kernel version with installed
 module directories without sudo. Kernel journal scanning has been removed from
@@ -186,8 +216,10 @@ failed, or stale backups block upgrades. DotDoctor does not assume a backup serv
 name, choose a destination, or invent a successful copy.
 
 Additional expected timers can be configured with `unit`, `scope`, and `max_age_days`.
-The built-in tmpfiles cleanup and Arch WKD timers are checked separately from their
-triggered services. Disabled timers that are not expected are left alone.
+The built-in `systemd-tmpfiles-clean.timer` has a two-day freshness limit;
+`archlinux-keyring-wkd-sync.timer` has an eight-day limit and is expected when
+pacman is available and archlinux-keyring is configured. Their triggered services
+are checked too. Other timers are checked only when listed in the configuration.
 
 `--fix` asks separately before enabling expected timers, starting the existing TRIM
 service, running a configured backup, scrubbing an overdue Btrfs filesystem, or
@@ -209,11 +241,36 @@ manual diagnosis; resetting the failure marker is not treated as a repair.
   an available fix. It does not cover all AUR, Flatpak, or third-party software.
 - Snapshot coverage and backup restorability still depend on their configuration.
   A clean report describes performed checks, not a guarantee against all failures.
+- `sys.keyring` checks installed keyring files and clock synchronization; it does
+  not independently verify all package signatures. Package transactions enforce
+  signature verification.
+- The initial connectivity probe uses TCP port 53 on external DNS servers;
+  filtering those connections can prevent updates despite working HTTPS access.
+- Cancellation of audit process groups is tested separately from cancellation of
+  package transactions. Do not assume that interrupting an upgrade rolls it back.
 
-Scan/fix exit codes remain `0` without FAIL, `2` with FAIL, and `3` for configuration
-errors. Upgrade returns `1` for fatal connectivity/repository failures, `2` for
-blocked/failed maintenance or remaining critical findings, and `3` for sudo setup
-failure. An update started from the default scan preserves its failure code.
+### Exit codes
+
+| Code | Current meaning |
+| --- | --- |
+| `0` | Scan/fix has no FAIL; WARN and OUTD alone also return zero. Upgrade completed, or its initial audit reported no updates and no FAIL. |
+| `1` | Upgrade connectivity failure or unrecovered mirror/network failure. |
+| `2` | Scan/fix contains FAIL, an upgrade is blocked or fails, or CLI arguments are invalid. |
+| `3` | YAML parsing/schema error, or caching sudo credentials for an upgrade failed. |
+| `130` | Interrupted with Ctrl+C. |
+
+An update accepted from the default command preserves its failure code. Use JSON
+findings to distinguish warnings from a clean report; a zero exit code does not
+mean that every possible check was performed. Unexpected uncaught exceptions are
+not converted into a uniform configuration/runtime-error code.
+
+### Terminal behavior
+
+On an interactive terminal, pending checks use a dot spinner. Completed checks
+show their actual status and a single-line result without changing row order;
+long text is truncated during progress and the final report supplies details.
+`NO_ANIMATION=1`, `DOTDOCTOR_NO_ANIMATION=1`, or `NO_COLOR=1` disables live audit
+progress. Piped output and dumb terminals also use the static final report.
 
 Testing
 -------
@@ -224,11 +281,16 @@ Run tests:
 .venv/bin/pytest -v
 ```
 
+The [contributing guide](CONTRIBUTING.md) lists all local checks and safe testing
+rules. GitHub Actions currently runs Ruff, Black, mypy, and tests on Python 3.11,
+with a coverage threshold of 75%. Its installation uses editable source; wheel
+and sdist installation checks are release tasks, not existing CI steps.
+
 Project Layout
 --------------
 
 - `src/dotdoctor/domain`: Models, context, configuration schema
-- `src/dotdoctor/application`: System upgrade and dry-run orchestrators, interactive auto-fixer
-- `src/dotdoctor/infrastructure`: Configuration loader with XDG precedence
+- `src/dotdoctor/application`: System audit/update orchestrators, maintenance checks, interactive auto-fixer
+- `src/dotdoctor/infrastructure`: Configuration loader, bounded command readers, audit process cancellation, maintenance state and isolated news fetching
 - `src/dotdoctor/cli`: Typer application, theme design tokens, terminal renderer
 - `tests/`: Unit and integration test suites

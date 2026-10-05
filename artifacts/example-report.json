@@ -1,32 +1,34 @@
 {
-  "profile": "python-dev",
+  "profile": "system",
   "results": [
     {
-      "check_id": "binary.python",
-      "severity": "PASS",
-      "message": "Binary 'python' meets minimum version 3.11.",
-      "remediation": null,
+      "check_id": "sys.packages",
+      "severity": "OUTD",
+      "message": "1 update available",
+      "remediation": "dotdoctor --sysup",
       "details": {
-        "binary": "python",
-        "path": "/usr/bin/python",
-        "raw_version": "Python 3.12.4",
-        "current": "3.12.4",
-        "required": "3.11.0"
+        "updates": 1,
+        "packages": ["example-package 1.0-1 -> 1.1-1"],
+        "critical": []
       }
     },
     {
-      "check_id": "path.integrity",
-      "severity": "WARN",
-      "message": "PATH has quality issues (empty/duplicate/missing entries).",
-      "remediation": "Clean PATH in shell config and remove broken or duplicated entries.",
+      "check_id": "sys.cache",
+      "severity": "PASS",
+      "message": "100.0 MiB in pacman cache (clean)",
+      "remediation": null,
       "details": {
-        "empty_segments": "",
-        "duplicate_entries": [
-          "/usr/bin"
-        ],
-        "missing_entries": [
-          "/tmp/does-not-exist"
-        ]
+        "total_bytes": 104857600,
+        "candidates": 0
+      }
+    },
+    {
+      "check_id": "sys.backup",
+      "severity": "WARN",
+      "message": "backup is not configured; recovery is not verified",
+      "remediation": "configure maintenance.backup in dotdoctor.yml",
+      "details": {
+        "verified": false
       }
     }
   ]
