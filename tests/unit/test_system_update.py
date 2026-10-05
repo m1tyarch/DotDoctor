@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from rich.console import Console
 
 from dotdoctor.application.system_update import (
+    FIX_CHECK_IDS,
+    UPDATE_CHECK_IDS,
     DiskSpaceStatus,
     RebootStatus,
     SystemDryRunService,
@@ -1358,3 +1360,26 @@ def test_run_streaming_step() -> None:
     assert result.returncode == 0
     assert "hello" in result.stdout
     assert "err" in result.stderr
+
+
+def test_system_dry_run_include_checks_update_and_fix(monkeypatch, tmp_path: Path) -> None:
+    service = SystemDryRunService()
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.shutil.which", lambda n: f"/usr/bin/{n}"
+    )
+
+    update_tasks = service.build_tasks(_context(tmp_path), include_checks=UPDATE_CHECK_IDS)
+    update_ids = {t.check_id for t in update_tasks}
+    assert update_ids.issubset(UPDATE_CHECK_IDS)
+    assert "sys.packages" in update_ids
+    assert "sys.orphans" not in update_ids
+    assert "sys.cache" not in update_ids
+
+    fix_tasks = service.build_tasks(_context(tmp_path), include_checks=FIX_CHECK_IDS)
+    fix_ids = {t.check_id for t in fix_tasks}
+    assert fix_ids.issubset(FIX_CHECK_IDS)
+    assert "sys.packages" not in fix_ids
+    assert "sys.aur" not in fix_ids
+    assert "sys.orphans" in fix_ids
+    assert "sys.cache" in fix_ids
+    assert "sys.flatpak-unused" in fix_ids

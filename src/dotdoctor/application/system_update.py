@@ -260,6 +260,30 @@ def detect_pacnew_files() -> list[str]:
     return sorted(files)
 
 
+UPDATE_CHECK_IDS: frozenset[str] = frozenset(
+    {
+        "sys.packages",
+        "sys.aur",
+        "sys.flatpak",
+        "sys.firmware",
+        "sys.shell-omz",
+    }
+)
+
+FIX_CHECK_IDS: frozenset[str] = frozenset(
+    {
+        "sys.orphans",
+        "sys.cache",
+        "sys.flatpak-unused",
+        "sys.pacnew",
+        "sys.journal",
+        "sys.services",
+        "sys.disk",
+        "sys.reboot",
+    }
+)
+
+
 @dataclass(frozen=True)
 class SystemCheckTask:
     check_id: str
@@ -282,12 +306,15 @@ class SystemDryRunService:
         self,
         context: ScanContext,
         disabled_checks: set[str] | list[str] | None = None,
+        include_checks: set[str] | list[str] | frozenset[str] | None = None,
     ) -> list[SystemCheckTask]:
         tasks: list[SystemCheckTask] = []
         disabled: set[str] = set(disabled_checks or [])
         env_disabled = os.environ.get("DOTDOCTOR_DISABLE_CHECKS", "")
         if env_disabled:
             disabled.update(item.strip() for item in env_disabled.split(",") if item.strip())
+
+        includes: set[str] | None = set(include_checks) if include_checks is not None else None
 
         def _is_disabled(cid: str) -> bool:
             return (
@@ -296,11 +323,25 @@ class SystemDryRunService:
                 or cid.replace(":", ".") in disabled
             )
 
+        network_checks = {"sys.packages", "sys.aur", "sys.flatpak", "sys.firmware", "sys.shell-omz"}
+
+        def _is_included(cid: str) -> bool:
+            if includes is None:
+                return True
+            if cid == "sys.network":
+                return any(_is_included(c) for c in network_checks)
+            return (
+                cid in includes
+                or cid.replace(".", ":") in includes
+                or cid.replace(":", ".") in includes
+            )
+
         def _add_task(task: SystemCheckTask) -> None:
-            if not _is_disabled(task.check_id):
+            if _is_included(task.check_id) and not _is_disabled(task.check_id):
                 tasks.append(task)
 
-        online = self._is_online_fn()
+        needs_network = includes is None or any(_is_included(c) for c in network_checks)
+        online = self._is_online_fn() if needs_network else True
 
         if not online:
             _add_task(
@@ -340,13 +381,6 @@ class SystemDryRunService:
                         check_id="sys.flatpak",
                         label="Flatpak packages",
                         runner=lambda: self._check_flatpak(context),
-                    )
-                )
-                _add_task(
-                    SystemCheckTask(
-                        check_id="sys.flatpak-unused",
-                        label="Unused Flatpaks",
-                        runner=lambda: self._check_flatpak_unused(context),
                     )
                 )
 
@@ -401,6 +435,15 @@ class SystemDryRunService:
                 )
             )
 
+        if shutil.which("flatpak") is not None:
+            _add_task(
+                SystemCheckTask(
+                    check_id="sys.flatpak-unused",
+                    label="Unused Flatpaks",
+                    runner=lambda: self._check_flatpak_unused(context),
+                )
+            )
+
         if shutil.which("pacdiff") is not None or shutil.which("pacman") is not None:
             _add_task(
                 SystemCheckTask(
@@ -434,11 +477,15 @@ class SystemDryRunService:
         self,
         context: ScanContext,
         disabled_checks: set[str] | list[str] | None = None,
+        include_checks: set[str] | list[str] | frozenset[str] | None = None,
     ) -> ScanReport:
         try:
-            if disabled_checks:
+            if disabled_checks or include_checks:
                 return self.run_with_progress(
-                    context, on_task_complete=None, disabled_checks=disabled_checks
+                    context,
+                    on_task_complete=None,
+                    disabled_checks=disabled_checks,
+                    include_checks=include_checks,
                 )
             return self.run_with_progress(context, on_task_complete=None)
         except TypeError:
@@ -449,8 +496,13 @@ class SystemDryRunService:
         context: ScanContext,
         on_task_complete: Callable[[str], None] | None = None,
         disabled_checks: set[str] | list[str] | None = None,
+        include_checks: set[str] | list[str] | frozenset[str] | None = None,
     ) -> ScanReport:
-        tasks = self.build_tasks(context, disabled_checks=disabled_checks)
+        tasks = self.build_tasks(
+            context,
+            disabled_checks=disabled_checks,
+            include_checks=include_checks,
+        )
         results = self._run_tasks(tasks, on_task_complete=on_task_complete)
         return ScanReport(profile=context.profile, results=results)
 
