@@ -158,4 +158,5 @@ never describe an omitted check as verified coverage.
 Scan/fix exit codes are 0 without FAIL (including WARN/OUTD) and 2 with FAIL.
 Handled YAML configuration errors return 3. Upgrade failures use 1/2/3 depending
 on the failing stage; Ctrl+C returns 130. JSON export is implemented for default
-and fix modes, not sysup. Follow [README.md](README.md) for the full exit table.
+and fix modes, not sysup. Follow the [reference](docs/reference.md#exit-codes)
+for the full exit table; the [README](README.md) provides installation and everyday use.

@@ -1,296 +1,111 @@
-DotDoctor
-=========
+<div align="center">
 
-DotDoctor is a fast, minimalist Linux CLI utility for system diagnostics, hygiene audits, and comprehensive system updates.
+<h1>DotDoctor</h1>
+<p>Keep your Arch system in check.</p>
+<p><sub>Arch Linux / CachyOS &nbsp;·&nbsp; Python 3.11+ &nbsp;·&nbsp; MIT</sub></p>
 
-Key Features
-------------
+<p>
+  <a href="#install">Install</a> &nbsp;·&nbsp;
+  <a href="#use">Use</a> &nbsp;·&nbsp;
+  <a href="#configure">Configure</a> &nbsp;·&nbsp;
+  <a href="docs/reference.md">Reference</a>
+</p>
 
-- **Parallel System Diagnostics & Dry-Run** (`dotdoctor`): Fast parallel audit of Arch/AUR packages, Flatpaks, firmware, Oh-My-Zsh, orphan packages, pacman cache, `.pacnew` files, disk space, and failed systemd units.
-- **Sequential System Upgrade** (`dotdoctor --sysup`): Sequential update flow with preflight checks, a pre-update snapshot when Snapper / Timeshift is configured, mirror refresh when supported, package/AUR updates, Flatpak updates, unused runtime pruning, cache cleanup, Oh-My-Zsh, and firmware updates.
-- **Interactive Auto-Fix** (`dotdoctor --fix`): Review hygiene findings and confirm supported actions individually: cache/runtime cleanup, orphan removal, configuration merging, journal cleanup, TRIM, timers, backups, overdue Btrfs scrubs, package reinstallation, or reboot.
-- **Zero Visual Noise**: Minimalist 2-space terminal design, clear status tokens (`PASS`, `WARN`, `FAIL`, `OLD`, `DONE`, `SKIP`), and honest reporting.
-- **Cancellable Audits**: Ctrl+C stops diagnostic commands and their process groups,
-  restores the cursor, and exits with code `130`. Cancelling a scan does not start fixes.
-- **Live Audit Results**: Each completed check replaces its spinner with its actual
-  status and a short result in the same row. Checks remain parallel with no display delays.
-- **Weekly Maintenance**: Signing keys and Arch notices, verified backup freshness,
-  expected timer jobs, TRIM, SMART, Btrfs scrub history,
-  filesystem capacity/inodes, security advisories, package files, and rebuild findings.
+</div>
 
-System Update Safety Model
---------------------------
+A clear view of what needs attention, before you change anything.
+DotDoctor brings system checks, updates, and maintenance into one small Linux CLI.
+Checks run in parallel. In an interactive terminal, each result appears as soon
+as it is ready.
 
-Each scan builds one task plan for both progress and execution. Failed commands,
-timeouts, inaccessible managers, and unsupported output produce a finding rather
-than PASS. A detected failed service remains FAIL even if another manager
-cannot be queried. Read-only command cancellation is scoped to the audit; upgrade
-transactions and interactive fixes use their existing execution paths.
+```text
+DotDoctor · system
 
-- Pre-update system snapshot creation when Snapper or Timeshift is available.
-- Strict subprocess exit code handling (`pacman`, `yay`/`paru`, `flatpak`, `fwupdmgr`).
-- Distinguishes AUR out-of-date flagged packages from installable updates.
-- Mirror fallback is attempted when package sync fails with mirror/network symptoms.
-- Connectivity and unrecovered mirror failures return `1`; other failed or blocked
-  upgrade steps return `2`. See the exit-code table below.
-- A failed pre-update snapshot or blocking maintenance finding aborts the update.
-- Unread Arch notices require explicit confirmation (default: no); acceptance is
-  stored in `$XDG_STATE_HOME/dotdoctor/maintenance.json`, or
-  `~/.local/state/dotdoctor/maintenance.json`. Scanning never acknowledges notices.
-- Available keyring updates are installed before the full system upgrade. A known
-  signature/trust failure gets one keyring recovery attempt. Signature verification
-  is never disabled. A synchronized package database is followed immediately by
-  `pacman -Su`; failures stop the remaining workflow.
-- Read-only privileged checks use `sudo -n` and never prompt for a password. Storage
-  checks run again after sudo credentials are cached, before any upgrade transaction.
-- Missing package files, database consistency, vulnerabilities, and rebuild findings are
-  checked again after updating. A confirmed rebuild is checked again afterward.
+  PASS  sys.packages  up to date
+  PASS  sys.cache     100.0 MiB in pacman cache (clean)
+  WARN  sys.backup    backup is not configured; recovery is not verified
 
-Requirements
-------------
+2 passed · 1 warning
+```
 
-- Python `>=3.11`
-- Linux environment (primarily Arch Linux / CachyOS)
-- System tools (used dynamically when available):
-	- `checkupdates`
-	- `paru` or `yay`
-	- `pacman-contrib` (`paccache`, `pacdiff`)
-	- `flatpak`
-	- `fwupdmgr`
-	- `cachyos-rate-mirrors` or `reflector`
-	- `snapper` or `timeshift`
-	- `smartmontools` (`smartctl`) for physical disk health
-	- `arch-audit` for Arch Security Tracker advisories
-	- `rebuild-detector` (`checkrebuild`) for foreign package compatibility
-	- `btrfs-progs` when Btrfs filesystems are mounted
+<sub>Illustrative report. Checks depend on your installed tools and configuration.</sub>
 
-Installation
-------------
+## Install
 
-Using local repository:
+Requires Linux and Python **3.11 or newer**. Install the current development
+branch from source:
 
 ```bash
+git clone --branch refactor/system-update-strict-errors \
+  https://github.com/m1tyarch/DotDoctor.git
+cd DotDoctor
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e .
-```
-
-Install dev dependencies:
-
-```bash
-python -m pip install -e '.[dev]'
-```
-
-Usage
------
-
-### 1. Diagnostic / Dry-Run Scan (Default)
-
-Run parallel system diagnostic checks:
-
-```bash
 dotdoctor
 ```
 
-The audit starts without changing packages or starting repairs. After reporting,
-the default command can offer an update and supported fixes; these start only
-after confirmation. The initial update/fix prompts default to yes, so read them
-before pressing Enter. EOF declines these prompts; redirected input can still
-accept actions if it supplies an affirmative answer.
+For later runs, activate the same environment or use `.venv/bin/dotdoctor` from
+the checkout. A plain clone of the default branch may contain older behavior.
 
-The current CLI has three modes and the `version` subcommand. The former `scan`,
-`--env`, `--profile`, `python-dev`, and `cpp-dev` interfaces are no longer supported.
+## Use
 
-Show expanded details (e.g. all available update package versions):
+Start with `dotdoctor` whenever you want to see what needs attention.
+Choose an explicit mode when you already know the next step.
 
-```bash
-dotdoctor -v
-```
+| Command | What happens |
+| :--- | :--- |
+| `dotdoctor` | Audit the system, then offer updates or supported fixes when relevant. |
+| `dotdoctor --sysup` | Check update-related findings, then run the sequential update workflow when needed. |
+| `dotdoctor --fix` | Check system hygiene and ask before each supported action. |
 
-Export report to JSON:
+The audit does not install packages or start repairs. Its follow-up update/fix
+prompts default to **yes**; enter `n` to keep the run diagnostic. `--sysup` uses
+noninteractive package transactions after its checks. A configured snapshot is
+created before updating; if snapshot creation fails, the update stops. Missing
+snapshot tooling is reported as `SKIP`.
+
+Use `-v` to expand findings, `--help` for options, and `dotdoctor version` for the
+installed version. During an audit, **Ctrl+C** stops the diagnostic processes
+and restores your terminal.
+
+<details>
+<summary>Export a report or exclude a check</summary>
 
 ```bash
 dotdoctor --json-output report.json
+dotdoctor --disable-check sys.firmware
 ```
 
-JSON export is implemented for the default command and `--fix`, and contains the
-latest scan/fix report. Successful accepted updates are followed by a new scan;
-if an accepted update fails, the default command exports its pre-update report
-and returns the update failure code. `--sysup` does not export a JSON report.
-JSON uses `profile: system` and `results` with `check_id`, `severity`, `message`,
-`remediation`, and `details`; the terminal token `OLD` is serialized as `OUTD`.
-See the illustrative [example report](artifacts/example-report.json).
+JSON export is available for the default and fix modes. JSON uses `OUTD` for
+terminal `OLD`. Disabling a package-manager check excludes its audit, not its
+update transaction. See [reporting and exit codes](docs/reference.md#exit-codes)
+for automation: warnings alone do not produce a nonzero scan exit code.
 
-Disable specific checks:
+</details>
+
+## Configure
+
+DotDoctor discovers available system tools and uses built-in defaults.
+To adjust checks or connect an existing maintenance job, start with
+[dotdoctor.example.yml](dotdoctor.example.yml) and select your configuration:
 
 ```bash
-dotdoctor --disable-check sys.firmware --disable-check sys.shell-omz
+dotdoctor --config /path/to/config.yml
 ```
 
-### 2. Comprehensive System Upgrade
+Backups are not created automatically. An unconfigured backup is reported as
+`WARN`; snapshots do not replace a verified backup. Optional tools such as
+`arch-audit` or `smartctl` add coverage when installed. A clean report describes
+the checks performed, not every possible system failure.
 
-Run full sequential system upgrade flow:
+[Configuration and maintenance](docs/reference.md#configuration) covers file
+precedence, intervals, timers, and the backup adapter.
 
-```bash
-dotdoctor --sysup
-```
+## Project
 
-### 3. Interactive Auto-Fix
+[Reference](docs/reference.md) · [Contributing](CONTRIBUTING.md) ·
+[Changelog](CHANGELOG.md) · [Release checklist](RELEASE_CHECKLIST.md) · [MIT license](LICENSE)
 
-Interactively resolve detected system hygiene issues:
-
-```bash
-dotdoctor --fix
-```
-
-Configuration
--------------
-
-DotDoctor supports YAML-based configuration for disabling checks.
-
-- Example file: `dotdoctor.example.yml`
-- Configuration selection, in order: explicit `--config`, `DOTDOCTOR_CONFIG`,
-  then the first existing file from `./dotdoctor.yml`, `./dotdoctor.yaml`,
-  `$XDG_CONFIG_HOME/dotdoctor/config.yml`, and `config.yaml` in that directory.
-  When `XDG_CONFIG_HOME` is unset, the directory is `~/.config/dotdoctor`.
-- With no configuration file, built-in defaults apply. A selected nonexistent
-  path also currently falls back to defaults.
-- `DOTDOCTOR_DISABLE_CHECKS=sys.firmware,sys.shell-omz` adds to YAML exclusions;
-  repeated `--disable-check` options add exclusions for the current invocation.
-- YAML also configures maintenance intervals, expected timers, and an existing
-  backup adapter.
-
-Example configuration:
-
-```yaml
-disabled_checks:
-  - sys.firmware
-  - sys.shell-omz
-```
-
-### Regular maintenance configuration
-
-`dotdoctor.example.yml` documents the `maintenance` section. Existing configurations
-with only `disabled_checks` continue to work. The three CLI modes are unchanged.
-
-The default audit includes `sys.keyring`, `sys.news`, `sys.backup`, `sys.timers`,
-`sys.trim`, `sys.smart`, `sys.btrfs`, `sys.mounts`, `sys.security`,
-`sys.package-db`, `sys.integrity`, and `sys.rebuild` checks when applicable.
-Checks are registered according to available tools. For example, `sys.security`
-is included only when pacman and arch-audit are installed; `sys.smart` requires
-lsblk and smartctl. An omitted check provides no health or security coverage.
-An included check that cannot read or verify its data reports WARN or FAIL.
-Disabling a maintenance check also removes it from pre/postflight checks; this is
-an explicit coverage override. Separate upgrade guards for connectivity and
-root/boot disk space still run. Disabling a package-manager audit does not omit
-that package manager's update transaction.
-
-Reboot detection (`sys.reboot`) compares the running kernel version with installed
-module directories without sudo. Kernel journal scanning has been removed from
-audits and upgrade preflight checks.
-
-Backups are **not configured automatically**. Without a configured backup, DotDoctor
-reports WARN and does not offer a nonexistent backup fix. To connect an existing job:
-
-```yaml
-maintenance:
-  backup:
-    service: backup.service
-    scope: user
-    max_age_days: 7
-    required_before_upgrade: true
-    status_command: [/home/you/bin/backup-status]
-```
-
-The read-only status command is an argument array, executed without a shell or stdin.
-It must query the backup destination using your existing tool and emit JSON such as:
-
-```json
-{"completed_at": "2026-10-05T12:00:00+02:00", "verified": true}
-```
-
-`completed_at` is an ISO timestamp with a timezone or a Unix timestamp. `verified`
-must be the boolean `true` for a completed, verified copy. A recent service execution
-alone is insufficient. With `required_before_upgrade: true`, unavailable, unverified,
-failed, or stale backups block upgrades. DotDoctor does not assume a backup service
-name, choose a destination, or invent a successful copy.
-
-Additional expected timers can be configured with `unit`, `scope`, and `max_age_days`.
-The built-in `systemd-tmpfiles-clean.timer` has a two-day freshness limit;
-`archlinux-keyring-wkd-sync.timer` has an eight-day limit and is expected when
-pacman is available and archlinux-keyring is configured. Their triggered services
-are checked too. Other timers are checked only when listed in the configuration.
-
-`--fix` asks separately before enabling expected timers, starting the existing TRIM
-service, running a configured backup, scrubbing an overdue Btrfs filesystem, or
-reinstalling selected official packages through a full upgrade. These new actions
-default to **no** and are rechecked before receiving PASS. Failed services require
-manual diagnosis; resetting the failure marker is not treated as a repair.
-
-### Frequency and limits
-
-- TRIM is due after seven days; an applicable continuous discard configuration also
-  satisfies the check. Encryption/discard policy is never changed automatically.
-- Btrfs scrub is due after 30 days by default. Scans read saved scrub status and device
-  counters; they never start scrub or SMART self-tests. Scrub targets are deduplicated
-  by filesystem identity. Device error history requires review; uncorrectable scrub
-  errors and current SMART failures block upgrades rather than trigger repair.
-- Package file checks use `pacman -Qk`, not a full-content hash scan. `pacman -Dk`
-  checks local database consistency. Both have bounded execution times.
-- Security coverage is limited to Arch Security Tracker, including issues without
-  an available fix. It does not cover all AUR, Flatpak, or third-party software.
-- Snapshot coverage and backup restorability still depend on their configuration.
-  A clean report describes performed checks, not a guarantee against all failures.
-- `sys.keyring` checks installed keyring files and clock synchronization; it does
-  not independently verify all package signatures. Package transactions enforce
-  signature verification.
-- The initial connectivity probe uses TCP port 53 on external DNS servers;
-  filtering those connections can prevent updates despite working HTTPS access.
-- Cancellation of audit process groups is tested separately from cancellation of
-  package transactions. Do not assume that interrupting an upgrade rolls it back.
-
-### Exit codes
-
-| Code | Current meaning |
-| --- | --- |
-| `0` | Scan/fix has no FAIL; WARN and OUTD alone also return zero. Upgrade completed, or its initial audit reported no updates and no FAIL. |
-| `1` | Upgrade connectivity failure or unrecovered mirror/network failure. |
-| `2` | Scan/fix contains FAIL, an upgrade is blocked or fails, or CLI arguments are invalid. |
-| `3` | YAML parsing/schema error, or caching sudo credentials for an upgrade failed. |
-| `130` | Interrupted with Ctrl+C. |
-
-An update accepted from the default command preserves its failure code. Use JSON
-findings to distinguish warnings from a clean report; a zero exit code does not
-mean that every possible check was performed. Unexpected uncaught exceptions are
-not converted into a uniform configuration/runtime-error code.
-
-### Terminal behavior
-
-On an interactive terminal, pending checks use a dot spinner. Completed checks
-show their actual status and a single-line result without changing row order;
-long text is truncated during progress and the final report supplies details.
-`NO_ANIMATION=1`, `DOTDOCTOR_NO_ANIMATION=1`, or `NO_COLOR=1` disables live audit
-progress. Piped output and dumb terminals also use the static final report.
-
-Testing
--------
-
-Run tests:
-
-```bash
-.venv/bin/pytest -v
-```
-
-The [contributing guide](CONTRIBUTING.md) lists all local checks and safe testing
-rules. GitHub Actions currently runs Ruff, Black, mypy, and tests on Python 3.11,
-with a coverage threshold of 75%. Its installation uses editable source; wheel
-and sdist installation checks are release tasks, not existing CI steps.
-
-Project Layout
---------------
-
-- `src/dotdoctor/domain`: Models, context, configuration schema
-- `src/dotdoctor/application`: System audit/update orchestrators, maintenance checks, interactive auto-fixer
-- `src/dotdoctor/infrastructure`: Configuration loader, bounded command readers, audit process cancellation, maintenance state and isolated news fetching
-- `src/dotdoctor/cli`: Typer application, theme design tokens, terminal renderer
-- `tests/`: Unit and integration test suites
+The CLI has three system modes and a `version` subcommand. Earlier dev profiles
+and the `scan` command are no longer supported.

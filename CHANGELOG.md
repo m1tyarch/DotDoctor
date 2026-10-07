@@ -20,6 +20,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Redesign the README around installation and everyday use; move detailed
+  configuration, command behavior, and limitations into a linked reference.
 - Keep the upgrade spinner's animation state across progress refreshes, including
   periods when the command emits no new output.
 - Refresh project documentation for the three system-maintenance modes,
