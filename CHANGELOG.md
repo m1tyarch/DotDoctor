@@ -20,6 +20,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Keep the upgrade spinner's animation state across progress refreshes, including
+  periods when the command emits no new output.
 - Refresh project documentation for the three system-maintenance modes,
   configuration precedence, actual exit codes, live results, and testing limits.
 - Remove the privileged kernel journal check from audits and upgrade preflight;

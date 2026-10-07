@@ -2059,6 +2059,7 @@ class SystemUpgradeService:
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
         current_subline: list[str] = [""]
+        spinner = Spinner("dots")
         ansi_re = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
         def _read_stream(stream: Any, lines_buf: list[str], is_stdout: bool) -> None:
@@ -2092,7 +2093,7 @@ class SystemUpgradeService:
             grid.add_column(width=STATUS_WIDTH)
             grid.add_column()
             grid.add_column()
-            grid.add_row(INDENT, Spinner("dots"), GAP, title)
+            grid.add_row(INDENT, spinner, GAP, title)
             if sub:
                 prefix_len = 2 + STATUS_WIDTH + 2 + 2
                 max_sub_len = max(10, console_width - prefix_len)
