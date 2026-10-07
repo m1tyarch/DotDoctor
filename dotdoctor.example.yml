@@ -1,63 +1,55 @@
-profiles:
-  python-dev:
-    enabled_checks:
-      - binary.python
-      - binary.pip
-      - binary.git
-      - binary.gcc
-      - binary.g++
-      - binary.cmake
-      - binary.make
-      - path.integrity
-      - shell.config
-      - permissions.dev_dirs
-    required_binaries:
-      - name: python
-        min_version: "3.11"
-      - name: pip
-      - name: git
-        min_version: "2.30"
-      - name: gcc
-        min_version: "10.0"
-      - name: g++
-        min_version: "10.0"
-      - name: cmake
-        min_version: "3.20"
-      - name: make
-    permission_paths:
-      - "~"
-      - "."
-    shell_config_files:
-      - "~/.bashrc"
-      - "~/.zshrc"
-  cpp-dev:
-    enabled_checks:
-      - binary.python
-      - binary.pip
-      - binary.git
-      - binary.gcc
-      - binary.g++
-      - binary.cmake
-      - binary.make
-      - path.integrity
-      - shell.config
-      - permissions.dev_dirs
-    required_binaries:
-      - name: python
-        min_version: "3.11"
-      - name: pip
-      - name: git
-        min_version: "2.30"
-      - name: gcc
-        min_version: "11.0"
-      - name: g++
-        min_version: "11.0"
-      - name: cmake
-        min_version: "3.22"
-      - name: make
-    permission_paths:
-      - "~"
-      - "."
-    shell_config_files:
-      - "~/.bashrc"
-      - "~/.zshrc"
+# DotDoctor Configuration
+# Placed at $XDG_CONFIG_HOME/dotdoctor/config.yml or ~/.config/dotdoctor/config.yml
+
+# List of check IDs to disable during scans:
+#   sys.packages        - Pacman system packages
+#   sys.aur             - AUR updates (yay / paru)
+#   sys.flatpak         - Flatpak packages
+#   sys.flatpak-unused  - Unused Flatpak runtimes
+#   sys.firmware        - Firmware updates (fwupd)
+#   sys.reboot          - Reboot required check
+#   sys.disk            - Disk space check
+#   sys.orphans         - Orphan packages
+#   sys.cache           - Pacman cache size
+#   sys.pacnew          - .pacnew configuration files
+#   sys.services        - Failed systemd units
+#   sys.journal         - Systemd journal size
+#   sys.keyring         - Signing keyring files and synchronized clock
+#   sys.news            - Unread Arch upgrade notices
+#   sys.backup          - Configured backup job and verified copy freshness
+#   sys.timers          - Expected timers and their last successful jobs
+#   sys.trim            - Periodic TRIM or continuous discard
+#   sys.smart           - Physical storage SMART health (cached sudo only)
+#   sys.btrfs           - Device error counters and scrub freshness
+#   sys.mounts          - Capacity, read-only mounts, and available inodes
+#   sys.security        - Known vulnerabilities from Arch Security Tracker
+#   sys.package-db      - Local pacman database consistency
+#   sys.integrity       - Missing installed package files (not file hashes)
+#   sys.rebuild         - Foreign package library compatibility
+disabled_checks: []
+
+maintenance:
+  # Add your distribution's keyring package when needed.
+  keyring_packages: [archlinux-keyring]
+  scrub_max_age_days: 30
+  integrity_timeout_seconds: 60
+  # tmpfiles-clean and Arch WKD timers are checked automatically.
+  timers: []
+  # Example of an additional expected timer:
+  # timers:
+  #   - unit: backup.timer
+  #     scope: user
+  #     max_age_days: 7
+
+  # An absent backup is reported as WARN, without blocking upgrades.
+  backup: null
+  # Connect an EXISTING backup job; DotDoctor does not create backup repositories.
+  # backup:
+  #   service: backup.service
+  #   scope: user
+  #   max_age_days: 7
+  #   required_before_upgrade: true
+  #   status_command: [/home/you/bin/backup-status]
+  # The read-only adapter must query the backup destination and output JSON:
+  # {"completed_at": "2026-10-05T12:00:00+02:00", "verified": true}
+  # verified=true means the tool verified a completed copy, not just a job start.

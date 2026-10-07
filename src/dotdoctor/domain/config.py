@@ -1,66 +1,38 @@
+from typing import Annotated, Literal
+
 from pydantic import BaseModel, Field
 
 
-class BinaryRequirement(BaseModel):
-    name: str = Field(min_length=1)
-    min_version: str | None = None
-    version_args: list[str] = Field(default_factory=lambda: ["--version"])
+class TimerConfig(BaseModel):
+    unit: str = Field(pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.@\\-]*\.timer$")
+    scope: Literal["system", "user"] = "system"
+    max_age_days: int = Field(default=7, ge=1, le=365)
 
 
-class ProfileConfig(BaseModel):
-    enabled_checks: list[str] = Field(default_factory=list)
-    required_binaries: list[BinaryRequirement] = Field(default_factory=list)
-    permission_paths: list[str] = Field(default_factory=list)
-    shell_config_files: list[str] = Field(default_factory=list)
+class BackupConfig(BaseModel):
+    service: str = Field(pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.@\\-]*\.service$")
+    scope: Literal["system", "user"] = "system"
+    # An existing backup tool/adapter must report completed_at and verified as JSON.
+    # Commands are argument arrays, never shell strings.
+    status_command: list[Annotated[str, Field(min_length=1)]] = Field(min_length=1)
+    max_age_days: int = Field(default=7, ge=1, le=365)
+    required_before_upgrade: bool = False
+
+
+class MaintenanceConfig(BaseModel):
+    keyring_packages: list[Annotated[str, Field(pattern=r"^[A-Za-z0-9@_+][A-Za-z0-9@_.+\-]*$")]] = (
+        Field(default_factory=lambda: ["archlinux-keyring"], min_length=1)
+    )
+    timers: list[TimerConfig] = Field(default_factory=list)
+    backup: BackupConfig | None = None
+    scrub_max_age_days: int = Field(default=30, ge=1, le=365)
+    integrity_timeout_seconds: int = Field(default=60, ge=1, le=600)
 
 
 class DotDoctorConfig(BaseModel):
-    profiles: dict[str, ProfileConfig]
+    disabled_checks: list[str] = Field(default_factory=list)
+    maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
 
 
 def default_config() -> DotDoctorConfig:
-    common_checks = [
-        "binary.python",
-        "binary.pip",
-        "binary.git",
-        "binary.gcc",
-        "binary.g++",
-        "binary.cmake",
-        "binary.make",
-        "path.integrity",
-        "shell.config",
-        "permissions.dev_dirs",
-    ]
-
-    return DotDoctorConfig(
-        profiles={
-            "python-dev": ProfileConfig(
-                enabled_checks=common_checks,
-                required_binaries=[
-                    BinaryRequirement(name="python", min_version="3.11"),
-                    BinaryRequirement(name="pip"),
-                    BinaryRequirement(name="git", min_version="2.30"),
-                    BinaryRequirement(name="gcc", min_version="10.0"),
-                    BinaryRequirement(name="g++", min_version="10.0"),
-                    BinaryRequirement(name="cmake", min_version="3.20"),
-                    BinaryRequirement(name="make"),
-                ],
-                permission_paths=["~", "."],
-                shell_config_files=["~/.bashrc", "~/.zshrc"],
-            ),
-            "cpp-dev": ProfileConfig(
-                enabled_checks=common_checks,
-                required_binaries=[
-                    BinaryRequirement(name="python", min_version="3.11"),
-                    BinaryRequirement(name="pip"),
-                    BinaryRequirement(name="git", min_version="2.30"),
-                    BinaryRequirement(name="gcc", min_version="11.0"),
-                    BinaryRequirement(name="g++", min_version="11.0"),
-                    BinaryRequirement(name="cmake", min_version="3.22"),
-                    BinaryRequirement(name="make"),
-                ],
-                permission_paths=["~", "."],
-                shell_config_files=["~/.bashrc", "~/.zshrc"],
-            ),
-        }
-    )
+    return DotDoctorConfig()

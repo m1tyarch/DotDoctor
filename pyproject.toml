@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "dotdoctor"
 version = "0.1.0"
-description = "DotDoctor: Linux development environment diagnostics CLI"
+description = "DotDoctor: Minimalist Linux system diagnostic and update utility"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [

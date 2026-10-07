@@ -1,122 +1,109 @@
-https://github.com/user-attachments/assets/8fe6b95e-714a-4390-803b-41f75ced1df6
+<div align="center">
 
+<h1>DotDoctor</h1>
+<p>Keep your Arch system in check.</p>
+<p><sub>Arch Linux / CachyOS &nbsp;·&nbsp; Python 3.11+ &nbsp;·&nbsp; MIT</sub></p>
 
+<p>
+  <a href="#install">Install</a> &nbsp;·&nbsp;
+  <a href="#use">Use</a> &nbsp;·&nbsp;
+  <a href="#configure">Configure</a> &nbsp;·&nbsp;
+  <a href="docs/reference.md">Reference</a>
+</p>
 
-DotDoctor
-=========
+</div>
 
-DotDoctor is a Linux CLI utility for diagnosing development environment issues and checking available system updates.
+A clear view of what needs attention, before you change anything.
+DotDoctor brings system checks, updates, and maintenance into one small Linux CLI.
+Checks run in parallel. In an interactive terminal, each result appears as soon
+as it is ready.
 
-Key Features
-------------
+```text
+DotDoctor · system
 
-- Development environment checks (binary availability, version checks, PATH integrity, shell config sanity, directory permissions)
-- Live terminal dashboard and plain report mode
-- Optional interactive auto-fix flow for actionable findings
-- System dry-run update audit (`--sys`) for Arch packages, AUR, Flatpak, firmware, and Oh-My-Zsh
-- System upgrade flow (`--sysup`) with strict failure handling
+  PASS  sys.packages  up to date
+  PASS  sys.cache     100.0 MiB in pacman cache (clean)
+  WARN  sys.backup    backup is not configured; recovery is not verified
 
-System Update Safety Model
---------------------------
+2 passed · 1 warning
+```
 
-- AUR parsing recognizes flagged packages, including out-of-date markers from AUR helper output
-- Exit codes from update commands are handled strictly (`pacman`/`yay`, `flatpak`, `fwupdmgr`)
-- Fatal network and mirror failures are treated as hard failures
-- Mirror fallback is attempted when package sync fails with mirror/network symptoms
-- Fatal update failures terminate with exit code `1`
+<sub>Illustrative report. Checks depend on your installed tools and configuration.</sub>
 
-Requirements
-------------
+## Install
 
-- Python `>=3.11`
-- Linux environment
-- Optional system tools for extended checks and updates:
-	- `checkupdates`
-	- `yay`
-	- `flatpak`
-	- `fwupdmgr`
-	- `cachyos-rate-mirrors` or `reflector`
-
-Installation
-------------
-
-Using local repository:
+Requires Linux and Python **3.11 or newer**. Install from source:
 
 ```bash
+git clone https://github.com/m1tyarch/DotDoctor.git
+cd DotDoctor
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .
-```
-
-Install dev dependencies:
-
-```bash
-pip install -e .[dev]
-```
-
-Usage
------
-
-Run default scan:
-
-```bash
+python -m pip install -e .
 dotdoctor
 ```
 
-Run profile explicitly:
+For later runs, activate the same environment or use `.venv/bin/dotdoctor` from
+the checkout.
+
+## Use
+
+Start with `dotdoctor` whenever you want to see what needs attention.
+Choose an explicit mode when you already know the next step.
+
+| Command | What happens |
+| :--- | :--- |
+| `dotdoctor` | Audit the system, then offer updates or supported fixes when relevant. |
+| `dotdoctor --sysup` | Check update-related findings, then run the sequential update workflow when needed. |
+| `dotdoctor --fix` | Check system hygiene and ask before each supported action. |
+
+The audit does not install packages or start repairs. Its follow-up update/fix
+prompts default to **yes**; enter `n` to keep the run diagnostic. `--sysup` uses
+noninteractive package transactions after its checks. A configured snapshot is
+created before updating; if snapshot creation fails, the update stops. Missing
+snapshot tooling is reported as `SKIP`.
+
+Use `-v` to expand findings, `--help` for options, and `dotdoctor version` for the
+installed version. During an audit, **Ctrl+C** stops the diagnostic processes
+and restores your terminal.
+
+<details>
+<summary>Export a report or exclude a check</summary>
 
 ```bash
-dotdoctor scan --profile python-dev
+dotdoctor --json-output report.json
+dotdoctor --disable-check sys.firmware
 ```
 
-Run without fullscreen UI:
+JSON export is available for the default and fix modes. JSON uses `OUTD` for
+terminal `OLD`. Disabling a package-manager check excludes its audit, not its
+update transaction. See [reporting and exit codes](docs/reference.md#exit-codes)
+for automation: warnings alone do not produce a nonzero scan exit code.
+
+</details>
+
+## Configure
+
+DotDoctor discovers available system tools and uses built-in defaults.
+To adjust checks or connect an existing maintenance job, start with
+[dotdoctor.example.yml](dotdoctor.example.yml) and select your configuration:
 
 ```bash
-dotdoctor scan --no-ui
+dotdoctor --config /path/to/config.yml
 ```
 
-Export JSON report:
+Backups are not created automatically. An unconfigured backup is reported as
+`WARN`; snapshots do not replace a verified backup. Optional tools such as
+`arch-audit` or `smartctl` add coverage when installed. A clean report describes
+the checks performed, not every possible system failure.
 
-```bash
-dotdoctor scan --json-output artifacts/report.json
-```
+[Configuration and maintenance](docs/reference.md#configuration) covers file
+precedence, intervals, timers, and the backup adapter.
 
-Run system dry-run checks:
+## Project
 
-```bash
-dotdoctor --sys
-```
+[Reference](docs/reference.md) · [Contributing](CONTRIBUTING.md) ·
+[Changelog](CHANGELOG.md) · [Release checklist](RELEASE_CHECKLIST.md) · [MIT license](LICENSE)
 
-Run system upgrades:
-
-```bash
-dotdoctor --sysup
-```
-
-Configuration
--------------
-
-DotDoctor supports YAML-based configuration and profiles.
-
-- Default file: `dotdoctor.yml`
-- Example file: `dotdoctor.example.yml`
-- Override path: `--config /path/to/config.yml`
-
-Testing
--------
-
-Run tests:
-
-```bash
-.venv/bin/pytest --tb=short
-```
-
-Project Layout
---------------
-
-- `src/dotdoctor/domain`: entities, models, config schemas, ports
-- `src/dotdoctor/application`: use-cases and system update flows
-- `src/dotdoctor/infrastructure`: check implementations and config loading
-- `src/dotdoctor/cli`: Typer commands and terminal rendering
-- `tests/`: unit and integration test suites
-
+The CLI has three system modes and a `version` subcommand. Earlier dev profiles
+and the `scan` command are no longer supported.
