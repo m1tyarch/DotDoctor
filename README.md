@@ -18,15 +18,11 @@ DotDoctor brings system checks, updates, and maintenance into one small Linux CL
 Checks run in parallel. In an interactive terminal, each result appears as soon
 as it is ready.
 
-```text
-DotDoctor · system
 
-  PASS  sys.packages  up to date
-  PASS  sys.cache     100.0 MiB in pacman cache (clean)
-  WARN  sys.backup    backup is not configured; recovery is not verified
 
-2 passed · 1 warning
-```
+https://github.com/user-attachments/assets/e7ff9b2e-5a6e-4629-9f0c-8fb65807384e
+
+
 
 <sub>Illustrative report. Checks depend on your installed tools and configuration.</sub>
 
