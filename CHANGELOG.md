@@ -20,6 +20,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Isolate the configuration-file detection test from the host's `/etc`, so CI
+  does not depend on access to protected system directories.
 - Redesign the README around installation and everyday use; move detailed
   configuration, command behavior, and limitations into a linked reference.
 - Keep the upgrade spinner's animation state across progress refreshes, including

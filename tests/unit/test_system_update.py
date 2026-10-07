@@ -701,9 +701,25 @@ def test_check_orphans_detects_unneeded_packages(monkeypatch, tmp_path: Path) ->
     assert "no orphan packages" in res_clean.message
 
 
+def test_detect_pacnew_files_fallback_uses_isolated_tree(monkeypatch, tmp_path: Path) -> None:
+    etc_dir = tmp_path / "etc"
+    nested_dir = etc_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    pending = [etc_dir / "z.conf.pacnew", nested_dir / "a.conf.pacsave"]
+    for path in [*pending, etc_dir / "regular.conf"]:
+        path.write_text("test configuration", encoding="utf-8")
+
+    monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", lambda name: None)
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.Path",
+        lambda value: etc_dir if value == "/etc" else Path(value),
+    )
+
+    assert detect_pacnew_files() == sorted(str(path) for path in pending)
+
+
 def test_check_pacnew_detects_pending_merges(monkeypatch, tmp_path: Path) -> None:
     service = SystemDryRunService()
-    assert isinstance(detect_pacnew_files(), list)
     monkeypatch.setattr(
         "dotdoctor.application.system_update.shutil.which", lambda x: "/usr/bin/pacdiff"
     )
