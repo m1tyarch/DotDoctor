@@ -310,8 +310,24 @@ class MaintenanceChecks:
                 if not trigger:
                     raise ValueError("no triggered service")
                 service = properties(trigger[0], config.scope)
-                if not service_succeeded(service):
-                    issues.append(f"{config.unit}: triggered service has not succeeded")
+                if service.get("Result") not in {None, "success"} or service.get(
+                    "ExecMainStatus"
+                ) not in {None, "0"}:
+                    issues.append(
+                        f"{config.unit}: last job failed "
+                        f"(Result={service.get('Result', 'unknown')}, "
+                        f"exit={service.get('ExecMainStatus', 'unknown')})"
+                    )
+                elif service.get("ExecMainExitTimestamp", "") in {"", "n/a", "0"}:
+                    issues.append(f"{config.unit}: no completed execution recorded")
+                elif service.get("AssertResult") == "no":
+                    issues.append(f"{config.unit}: service assertion failed; job did not run")
+                elif service.get("ConditionResult") == "no":
+                    issues.append(
+                        f"{config.unit}: service skipped by condition; last success is not verified"
+                    )
+                elif not service_succeeded(service):
+                    issues.append(f"{config.unit}: last job success is not verified")
                 else:
                     age = _age_days(service.get("ExecMainExitTimestamp", ""))
                     if age > config.max_age_days:

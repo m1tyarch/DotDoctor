@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from rich.console import Console
 
 from dotdoctor.application.system_update import (
@@ -182,6 +183,41 @@ def test_system_dry_run_treats_checkupdates_exit_two_as_no_updates(
     report = service.run(_context(tmp_path))
     by_id = {item.check_id: item for item in report.results}
     assert by_id["sys.packages"].severity is Severity.PASS
+
+
+@pytest.mark.parametrize("output_stream", ["stdout", "stderr"])
+@pytest.mark.parametrize(
+    ("error", "severity", "remediation"),
+    [
+        ("==> ERROR: Cannot find the fakeroot binary", Severity.WARN, "sudo pacman -Syu fakeroot"),
+        ("error: failed to synchronize all databases", Severity.FAIL, "checkupdates"),
+        ("", Severity.FAIL, "checkupdates"),
+    ],
+)
+def test_checkupdates_failure_explains_the_cause(
+    monkeypatch, tmp_path, output_stream, error, severity, remediation
+):
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.shutil.which", lambda name: f"/usr/bin/{name}"
+    )
+    completed = SimpleNamespace(returncode=1, stdout="", stderr="")
+    setattr(completed, output_stream, error)
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.subprocess.run", lambda *args, **kwargs: completed
+    )
+
+    result = SystemDryRunService()._check_arch_packages(_context(tmp_path))
+
+    assert result.severity == severity
+    assert result.remediation == remediation
+    assert result.details["verified"] is False
+    assert result.details["returncode"] == 1
+    assert result.details["items"] == [error or "command returned no error output"]
+    if severity == Severity.WARN:
+        assert "fakeroot" in result.message
+        assert "updates are not verified" in result.message
+    else:
+        assert "exit=1" in result.message
 
 
 def test_system_dry_run_firmware_latest_available_is_not_counted_as_updates(

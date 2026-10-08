@@ -20,6 +20,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Explain checkupdates failures with the exit code and command output; report a
+  missing fakeroot dependency with its installation command instead of suggesting
+  an update workflow that may stop on the same failed check.
+- Distinguish failed timer jobs, skipped conditions, failed assertions, and missing
+  completion records without claiming unverified jobs succeeded.
 - Isolate the configuration-file detection test from the host's `/etc`, so CI
   does not depend on access to protected system directories.
 - Redesign the README around installation and everyday use; move detailed

@@ -153,9 +153,9 @@ reinstalling selected official packages through a full upgrade. These new action
 default to **no** and are rechecked before receiving PASS. Failed services require
 manual diagnosis; resetting the failure marker is not treated as a repair.
 Timer auto-fixes currently enable inactive expected timers; they do not rerun a
-failed or unverified triggered service. A generic "has not succeeded" finding
-can also reflect missing completion state, so inspect the service and its journal
-before assuming the job failed.
+failed or unverified triggered service. Findings distinguish a failed job, a
+condition-based skip, an assertion failure, and missing completion records.
+An unverified or skipped job remains WARN; it is not counted as a successful run.
 
 ### Frequency and limits
 
@@ -239,7 +239,7 @@ transactions and interactive fixes use their existing execution paths.
 - Python `>=3.11`
 - Linux environment (primarily Arch Linux / CachyOS)
 - System tools (used dynamically when available):
-	- `checkupdates`
+	- `checkupdates` and its `fakeroot` dependency
 	- `paru` or `yay`
 	- `pacman-contrib` (`paccache`, `pacdiff`)
 	- `flatpak`

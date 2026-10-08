@@ -129,7 +129,29 @@ def test_active_timer_with_failed_service_is_not_healthy(monkeypatch):
     monkeypatch.setattr(m, "properties", props)
     result = m.MaintenanceChecks().timers()
     assert result.severity == Severity.WARN
-    assert "has not succeeded" in result.details["items"][0]
+    assert "last job failed (Result=exit-code, exit=1)" in result.details["items"][0]
+    assert result.details["timers"] == []
+
+
+@pytest.mark.parametrize(
+    ("values", "finding"),
+    [
+        ({"ExecMainExitTimestamp": ""}, "no completed execution recorded"),
+        ({"ConditionResult": "no"}, "service skipped by condition"),
+        ({"AssertResult": "no"}, "service assertion failed"),
+    ],
+)
+def test_timer_distinguishes_unverified_jobs_from_failed_executions(monkeypatch, values, finding):
+    def props(unit, scope="system", timer=False):
+        if timer:
+            return {"ActiveState": "active", "Triggers": "clean.service"}
+        return {**healthy_service(), **values}
+
+    monkeypatch.setattr(m, "properties", props)
+    result = m.MaintenanceChecks().timers()
+    assert result.severity == Severity.WARN
+    assert finding in result.details["items"][0]
+    assert "last job failed" not in result.details["items"][0]
     assert result.details["timers"] == []
 
 

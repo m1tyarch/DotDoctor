@@ -648,11 +648,24 @@ class SystemDryRunService:
             return _result_for_count("sys.packages", 0)
 
         if completed.returncode not in {0, 2}:
+            error_output = (
+                getattr(completed, "stderr", "") or getattr(completed, "stdout", "") or ""
+            ).strip()
+            missing_fakeroot = "cannot find the fakeroot binary" in error_output.lower()
             return CheckResult(
                 check_id="sys.packages",
-                severity=Severity.FAIL,
-                message="package check failed",
-                remediation="dotdoctor --sysup",
+                severity=Severity.WARN if missing_fakeroot else Severity.FAIL,
+                message=(
+                    "checkupdates requires fakeroot; updates are not verified"
+                    if missing_fakeroot
+                    else f"checkupdates failed (exit={completed.returncode})"
+                ),
+                remediation="sudo pacman -Syu fakeroot" if missing_fakeroot else "checkupdates",
+                details={
+                    "verified": False,
+                    "returncode": completed.returncode,
+                    "items": error_output.splitlines() or ["command returned no error output"],
+                },
             )
 
         if not lines:
