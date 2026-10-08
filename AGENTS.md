@@ -90,6 +90,9 @@ When modifying, adding, or refactoring CLI outputs or checks, **strictly adhere 
   `DOTDOCTOR_NO_ANIMATION`, `NO_COLOR`, and static audit output on noninteractive
   or dumb terminals. Restore the cursor when the audit exits or is cancelled.
 - During long sysup subprocesses: stream the active sub-line as `  [dim]↳ <truncated-output>[/dim]` beneath the step.
+- Keep reboot authentication outside live displays so password prompts remain
+  visible. Request reboot after other fixes, bound command waits, and never infer
+  reboot completion from successful submission of the request.
 
 ### Remediation Text
 

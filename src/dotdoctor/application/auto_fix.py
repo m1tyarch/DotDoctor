@@ -31,7 +31,13 @@ class InteractiveAutoFixer:
         changed_any = False
         had_issues = False
 
-        for index, result in enumerate(results):
+        # Finish hygiene actions before requesting a reboot, while preserving
+        # the original order of results in the report.
+        action_order = sorted(
+            range(len(results)), key=lambda index: results[index].check_id == "sys.reboot"
+        )
+        for index in action_order:
+            result = results[index]
             if result.severity in {Severity.PASS, Severity.OUTD}:
                 continue
 
@@ -77,6 +83,7 @@ class InteractiveAutoFixer:
                     result.check_id
                     in {
                         "sys.pacnew",
+                        "sys.reboot",
                         "sys.trim",
                         "sys.btrfs",
                         "sys.timers",
@@ -92,6 +99,22 @@ class InteractiveAutoFixer:
             except (OSError, subprocess.SubprocessError) as exc:
                 self._console.print(f"[red]Auto-fix failed:[/red] {exc}")
                 continue
+
+            if result.check_id == "sys.reboot":
+                # An accepted reboot request is not evidence that the next
+                # kernel has booted. Do not recheck or run more repairs here.
+                if outcome.changed:
+                    results[index] = CheckResult(
+                        check_id=result.check_id,
+                        severity=Severity.WARN,
+                        message="reboot requested; completion must be verified after the next boot",
+                        details={**result.details, "reboot_requested": True, "verified": False},
+                    )
+                for line in format_status_line(
+                    "DONE" if outcome.changed else "WARN", result.check_id, outcome.note
+                ):
+                    self._console.print(line)
+                return ScanReport(profile=report.profile, results=results)
 
             if outcome.changed:
                 verified = self._verify(result, context)
@@ -312,10 +335,32 @@ class InteractiveAutoFixer:
         )
 
     def _fix_sys_reboot(self, context: ScanContext, result: CheckResult) -> FixOutcome:
-        cmd = ["sudo", "systemctl", "reboot"] if shutil.which("systemctl") else ["sudo", "reboot"]
-        res = subprocess.run(cmd, check=False)
+        self._console.print("  [dim]Caching sudo credentials[/dim]")
+        try:
+            # Inherit the terminal outside any Live display so sudo's password
+            # prompt remains visible. Only authentication may ask for input.
+            credentials = subprocess.run(["sudo", "-v"], check=False, timeout=120)
+        except subprocess.TimeoutExpired:
+            return FixOutcome(False, "Sudo authentication timed out; no reboot requested.")
+        if credentials.returncode:
+            return FixOutcome(False, "Sudo authentication failed; no reboot requested.")
+
+        cmd = (
+            ["sudo", "-n", "systemctl", "--no-ask-password", "reboot"]
+            if shutil.which("systemctl")
+            else ["sudo", "-n", "reboot"]
+        )
+        self._console.print("  [dim]Requesting system reboot[/dim]")
+        try:
+            res = subprocess.run(cmd, check=False, timeout=15)
+        except subprocess.TimeoutExpired:
+            return FixOutcome(
+                False,
+                "Reboot request timed out; state is unknown. Check systemctl list-jobs "
+                "before retrying.",
+            )
         if res.returncode == 0:
-            return FixOutcome(changed=True, note="System reboot initiated.")
+            return FixOutcome(changed=True, note="Reboot request accepted.")
         return FixOutcome(changed=False, note=f"Reboot command failed (exit={res.returncode}).")
 
     def _fix_sys_services(self, context: ScanContext, result: CheckResult) -> FixOutcome:

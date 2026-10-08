@@ -20,6 +20,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Keep reboot authentication visible outside spinners, bound authentication and
+  reboot command waits, and report timeouts without automatically retrying.
+- Request reboot after other fixes; keep completion unverified until the next
+  boot instead of immediately rescanning or marking the reboot check PASS.
 - Explain checkupdates failures with the exit code and command output; report a
   missing fakeroot dependency with its installation command instead of suggesting
   an update workflow that may stop on the same failed check.

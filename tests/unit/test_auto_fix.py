@@ -1,7 +1,13 @@
+import io
+import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+import typer
 from rich.console import Console
+from typer.testing import CliRunner
 
 from dotdoctor.application.auto_fix import FixOutcome, InteractiveAutoFixer
 from dotdoctor.domain.context import ScanContext
@@ -184,15 +190,16 @@ def test_fix_sys_journal(monkeypatch, tmp_path: Path) -> None:
     assert commands == [["sudo", "journalctl", "--vacuum-size=1G"]]
 
 
-def test_fix_sys_reboot(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("request_code", [0, 1])
+def test_fix_sys_reboot(monkeypatch, tmp_path: Path, request_code: int) -> None:
     context = _context(tmp_path)
     fixer = InteractiveAutoFixer(Console())
 
     commands = []
 
     def fake_run(cmd, *args, **kwargs):
-        commands.append(cmd)
-        return SimpleNamespace(returncode=0)
+        commands.append((cmd, kwargs))
+        return SimpleNamespace(returncode=0 if cmd == ["sudo", "-v"] else request_code)
 
     monkeypatch.setattr(
         "dotdoctor.application.auto_fix.shutil.which", lambda name: f"/usr/bin/{name}"
@@ -206,9 +213,174 @@ def test_fix_sys_reboot(monkeypatch, tmp_path: Path) -> None:
     )
     outcome = fixer._fix_sys_reboot(context, result)
 
+    assert outcome.changed is (request_code == 0)
+    assert outcome.note == (
+        "Reboot request accepted." if request_code == 0 else "Reboot command failed (exit=1)."
+    )
+    assert commands == [
+        (["sudo", "-v"], {"check": False, "timeout": 120}),
+        (
+            ["sudo", "-n", "systemctl", "--no-ask-password", "reboot"],
+            {"check": False, "timeout": 15},
+        ),
+    ]
+
+
+def test_reboot_fallback_is_bounded_and_noninteractive(monkeypatch, tmp_path):
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("dotdoctor.application.auto_fix.subprocess.run", fake_run)
+    monkeypatch.setattr("dotdoctor.application.auto_fix.shutil.which", lambda name: None)
+    result = CheckResult(check_id="sys.reboot", severity=Severity.WARN, message="reboot required")
+    outcome = InteractiveAutoFixer(Console(file=io.StringIO()))._fix_sys_reboot(
+        _context(tmp_path), result
+    )
     assert outcome.changed is True
-    assert outcome.note == "System reboot initiated."
-    assert commands == [["sudo", "systemctl", "reboot"]]
+    assert commands[-1] == (["sudo", "-n", "reboot"], {"check": False, "timeout": 15})
+
+
+def test_reboot_confirmation_defaults_to_no_with_real_prompt(monkeypatch, tmp_path):
+    app = typer.Typer()
+    fixer = InteractiveAutoFixer(Console())
+
+    def forbidden(*args):
+        raise AssertionError("Pressing Enter must not authenticate or request a reboot")
+
+    monkeypatch.setattr(fixer, "_fix_sys_reboot", forbidden)
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(check_id="sys.reboot", severity=Severity.WARN, message="reboot required")
+        ],
+    )
+
+    @app.command()
+    def run():
+        fixer.apply(report, _context(tmp_path))
+
+    result = CliRunner().invoke(app, [], input="\n")
+
+    assert result.exit_code == 0
+    assert "[y/N]" in result.output
+    assert "Skipped by user" in result.output
+
+
+@pytest.mark.parametrize("phase", ["authentication", "request"])
+def test_reboot_timeouts_do_not_retry_or_claim_success(monkeypatch, tmp_path, phase):
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        if phase == "authentication" or command[:2] != ["sudo", "-v"]:
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("dotdoctor.application.auto_fix.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "dotdoctor.application.auto_fix.shutil.which", lambda name: f"/usr/bin/{name}"
+    )
+    result = CheckResult(check_id="sys.reboot", severity=Severity.WARN, message="reboot required")
+    outcome = InteractiveAutoFixer(Console(file=io.StringIO()))._fix_sys_reboot(
+        _context(tmp_path), result
+    )
+    assert outcome.changed is False
+    assert "timed out" in outcome.note
+    if phase == "authentication":
+        assert commands == [["sudo", "-v"]]
+        assert "no reboot requested" in outcome.note
+    else:
+        assert len(commands) == 2
+        assert "state is unknown" in outcome.note
+        assert "systemctl list-jobs" in outcome.note
+
+
+def test_denied_reboot_authentication_never_sends_request(monkeypatch, tmp_path):
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr("dotdoctor.application.auto_fix.subprocess.run", fake_run)
+    result = CheckResult(check_id="sys.reboot", severity=Severity.WARN, message="reboot required")
+    outcome = InteractiveAutoFixer(Console(file=io.StringIO()))._fix_sys_reboot(
+        _context(tmp_path), result
+    )
+    assert commands == [["sudo", "-v"]]
+    assert outcome.changed is False
+    assert "no reboot requested" in outcome.note
+
+
+@pytest.mark.parametrize("accepted", [True, False])
+def test_reboot_is_last_has_no_spinner_and_is_not_verified_before_boot(
+    monkeypatch, tmp_path, accepted
+):
+    output = io.StringIO()
+    console = Console(file=output, force_terminal=True)
+    fixer = InteractiveAutoFixer(console)
+    actions = []
+    prompts = []
+    spinner_active = [False]
+
+    @contextmanager
+    def status(*args, **kwargs):
+        spinner_active[0] = True
+        try:
+            yield
+        finally:
+            spinner_active[0] = False
+
+    def confirm(prompt, default):
+        prompts.append((prompt, default))
+        return True
+
+    def clean(context, result):
+        actions.append("cache")
+        return FixOutcome(True, "Cache cleaned.")
+
+    def reboot(context, result):
+        assert spinner_active[0] is False
+        actions.append("reboot")
+        return FixOutcome(
+            accepted, "Reboot request accepted." if accepted else "Reboot request timed out."
+        )
+
+    def verify(result, context):
+        assert result.check_id == "sys.cache", "Reboot completion needs a new boot"
+        return CheckResult(check_id="sys.cache", severity=Severity.PASS, message="cache clean")
+
+    monkeypatch.setattr(console, "status", status)
+    monkeypatch.setattr("dotdoctor.application.auto_fix.typer.confirm", confirm)
+    monkeypatch.setattr(fixer, "_fix_sys_cache", clean)
+    monkeypatch.setattr(fixer, "_fix_sys_reboot", reboot)
+    monkeypatch.setattr(fixer, "_verify", verify)
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(check_id="sys.reboot", severity=Severity.WARN, message="reboot required"),
+            CheckResult(check_id="sys.cache", severity=Severity.WARN, message="cache too large"),
+        ],
+    )
+
+    updated = fixer.apply(report, _context(tmp_path))
+
+    assert actions == ["cache", "reboot"]
+    assert [result.check_id for result in updated.results] == ["sys.reboot", "sys.cache"]
+    assert prompts[-1][1] is False
+    assert updated.get_result("sys.cache").severity == Severity.PASS
+    reboot_result = updated.get_result("sys.reboot")
+    assert reboot_result.severity == Severity.WARN
+    assert reboot_result.details.get("reboot_requested", False) is accepted
+    if accepted:
+        assert reboot_result.details["verified"] is False
+        assert "next boot" in reboot_result.message
+    else:
+        assert "timed out" in output.getvalue()
+        assert "No changes applied" not in output.getvalue()
 
 
 def test_fix_sys_services(monkeypatch, tmp_path: Path) -> None:

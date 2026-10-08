@@ -157,6 +157,13 @@ failed or unverified triggered service. Findings distinguish a failed job, a
 condition-based skip, an assertion failure, and missing completion records.
 An unverified or skipped job remains WARN; it is not counted as a successful run.
 
+Reboot is offered after other fixes and defaults to no. Sudo authentication runs
+without a spinner, inherits the terminal, and has a 120-second timeout. The reboot
+request is noninteractive and has a 15-second timeout. A successful request ends
+the fix flow; `sys.reboot` stays WARN with `reboot_requested: true` until a later
+audit verifies the running kernel. A timeout does not prove that the request was
+rejected; inspect `systemctl list-jobs` before retrying. DotDoctor never forces a reboot.
+
 ### Frequency and limits
 
 - TRIM is due after seven days; an applicable continuous discard configuration also
