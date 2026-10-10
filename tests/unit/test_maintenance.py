@@ -502,7 +502,7 @@ def test_corrupt_news_state_is_never_a_pass(tmp_path, data):
     [
         ("", 0, Severity.PASS),
         ("openssl\tHigh\t3.0-2\tCVE-2026-0001\n", 0, Severity.FAIL),
-        ("openssl\tHigh\t\tCVE-2026-0001\n", 0, Severity.FAIL),
+        ("openssl\tHigh\t\tCVE-2026-0001\n", 0, Severity.WARN),
         ("", 1, Severity.WARN),
         ("unknown format", 0, Severity.WARN),
     ],
@@ -522,6 +522,42 @@ def test_security_includes_unfixed_and_rejects_errors(monkeypatch, stdout, code,
     assert "--upgradable" not in commands[0]
     if expected == Severity.FAIL:
         assert result.details["blocks_upgrade"] is False
+
+
+@pytest.mark.parametrize(
+    "stdout,expected,outdated,unresolved",
+    [
+        ("pam\tHigh\t\tCVE-2025-6020\n", Severity.WARN, [], ["pam"]),
+        ("pam\tHigh\t1.7.1-1\tCVE-2025-6020\n", Severity.FAIL, ["pam"], []),
+        (
+            "openssl\tHigh\t3.6.5-1\tCVE-2026-0001\npam\tHigh\t\tCVE-2025-6020\n",
+            Severity.FAIL,
+            ["openssl"],
+            ["pam"],
+        ),
+    ],
+)
+def test_security_distinguishes_version_findings_from_incomplete_tracker_data(
+    monkeypatch, stdout, expected, outdated, unresolved
+):
+    monkeypatch.setattr(m.shutil, "which", lambda name: "/usr/bin/arch-audit")
+    monkeypatch.setattr(m, "capture", lambda *args: response(stdout))
+    result = m.MaintenanceChecks().security()
+    assert result.severity == expected
+    assert result.details["outdated_packages"] == outdated
+    assert result.details["unresolved_packages"] == unresolved
+    assert result.details["verified"] is (not unresolved)
+    assert result.remediation == "arch-audit -c"
+    if unresolved:
+        assert any(
+            "not specified by tracker; needs review" in item for item in result.details["items"]
+        )
+    if not outdated:
+        assert "unresolved security advisories" in result.message
+    elif unresolved:
+        assert "1 below fixed versions" in result.message
+    else:
+        assert "below advisory fixed versions" in result.message
 
 
 def test_missing_security_tool_is_unknown():

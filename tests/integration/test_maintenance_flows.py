@@ -243,17 +243,61 @@ def test_signature_failure_retries_after_keyring_without_disabling_trust(
 
 
 def test_residual_vulnerability_is_reported_after_upgrade(monkeypatch, environment, context):
+    security = CheckResult(
+        check_id="sys.security",
+        severity=Severity.FAIL,
+        message="1 package below advisory fixed versions",
+        remediation="arch-audit -c",
+        details={"items": ["openssl: High CVE-2026-0001; fixed version: 3.6.5-1"]},
+    )
     monkeypatch.setattr(
         m.MaintenanceChecks,
         "run",
-        lambda self, context, ids: (
-            [finding("sys.security", Severity.FAIL)] if ids == m.POSTFLIGHT_IDS else []
-        ),
+        lambda self, context, ids: ([security] if ids == m.POSTFLIGHT_IDS else []),
     )
     output = io.StringIO()
     assert upgrade().run(context, Console(file=output)) == 2
     assert "FAIL" in output.getvalue()
+    assert "sys.security" in output.getvalue()
+    assert "openssl: High CVE-2026-0001; fixed version: 3.6.5-1" in output.getvalue()
+    assert "fix: arch-audit -c" in output.getvalue()
+    assert "Post-update checks require attention" in output.getvalue()
     assert "All updates completed successfully" not in output.getvalue()
+
+
+@pytest.mark.parametrize("width", [48, 120])
+def test_incomplete_security_metadata_after_upgrade_is_visible_without_transaction_failure(
+    monkeypatch, environment, context, width
+):
+    security = CheckResult(
+        check_id="sys.security",
+        severity=Severity.WARN,
+        message="1 package with unresolved security advisories",
+        remediation="arch-audit -c",
+        details={
+            "items": [
+                "pam: High CVE-2025-6020; fixed version: not specified by tracker; needs review"
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        m.MaintenanceChecks,
+        "run",
+        lambda self, context, ids: [security] if ids == m.POSTFLIGHT_IDS else [],
+    )
+    output = io.StringIO()
+    assert upgrade().run(context, Console(file=output, width=width, no_color=True)) == 0
+    rendered = output.getvalue()
+    normalized = " ".join(rendered.split())
+    assert "WARN sys.security" in normalized
+    assert "pam: High CVE-2025-6020" in normalized
+    assert "not specified by tracker; needs review" in normalized
+    assert "fix: arch-audit -c" in normalized
+    assert "Post-update checks require attention" in normalized
+    assert "All updates completed successfully" not in rendered
+    assert "FAIL" not in rendered and "failed" not in rendered
+    assert "\x1b[" not in rendered
+    assert all(len(line) <= width for line in rendered.splitlines())
 
 
 def test_declined_rebuild_does_not_build_anything(monkeypatch, environment, context):

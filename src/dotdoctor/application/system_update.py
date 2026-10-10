@@ -1818,9 +1818,22 @@ class SystemUpgradeService:
             if result.severity != Severity.PASS:
                 for line in format_status_line(
                     result.severity.value if result.severity != Severity.OUTD else "OLD",
-                    result.message,
+                    f"{result.check_id}  {result.message}",
+                    width=console_width,
                 ):
                     console.print(line)
+                items = result.details.get("items") or result.details.get("packages")
+                if isinstance(items, list):
+                    for item in items:
+                        for line in format_status_line("", f"• {item}", width=console_width):
+                            line.stylize("dim")
+                            console.print(line)
+                if result.remediation:
+                    for line in format_status_line(
+                        "", f"fix: {result.remediation}", width=console_width
+                    ):
+                        line.stylize("dim")
+                        console.print(line)
             if result.check_id == "sys.rebuild" and result.details.get("rebuild_packages"):
                 if not self._offer_rebuilds(result, context, console):
                     had_error = True
@@ -1829,14 +1842,18 @@ class SystemUpgradeService:
             had_error = True
         console.print()
         console.print(format_sysup_summary(done=done_count, failed=fail_count, skipped=skip_count))
-        if not had_error:
+        if any(r.severity != Severity.PASS for r in postflight):
+            console.print(
+                "[dim]Post-update checks require attention; review the findings above.[/dim]"
+            )
+        elif not had_error:
             if not any_updates:
                 console.print(
                     "[dim]Nothing to update. All packages and components are up to date.[/dim]"
                 )
             else:
                 console.print("[dim]All updates completed successfully.[/dim]")
-        elif created_snap:
+        if had_error and created_snap:
             if created_snap == "snapper":
                 console.print(
                     "\n[dim]Rollback available: sudo snapper rollback "

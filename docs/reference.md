@@ -111,6 +111,17 @@ an explicit coverage override. Separate upgrade guards for connectivity and
 root/boot disk space still run. Disabling a package-manager audit does not omit
 that package manager's update transaction.
 
+`sys.security` reads installed-package advisories through
+[arch-audit](https://man.archlinux.org/man/arch-audit.1.en). Packages reported below
+an advisory's fixed version produce FAIL. Entries with no fixed-version data
+produce WARN and remain unverified: the tracker can be incomplete or outdated,
+and those entries alone cannot establish whether the installed version is still
+affected. A mixed report remains FAIL when any package is below a fixed version.
+Unresolved entries are retained for manual review rather than counted as PASS.
+Use `arch-audit -c` to inspect CVEs and compare with upstream advisories.
+After upgrades, findings show check IDs, package details, and review commands;
+remaining check findings are displayed separately from completed action counts.
+
 Reboot detection (`sys.reboot`) compares the running kernel version with installed
 module directories without sudo. Kernel journal scanning has been removed from
 audits and upgrade preflight checks.

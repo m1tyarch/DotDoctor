@@ -639,7 +639,7 @@ class MaintenanceChecks:
                 "sudo pacman -Syu arch-audit",
                 verified=False,
             )
-        result = capture(["arch-audit", "--format", "%n\t%s\t%v\t%c"], 30)
+        result = capture(["arch-audit", "--color", "never", "--format", "%n\t%s\t%v\t%c"], 30)
         if result.returncode:
             raise ValueError(result.stderr.strip() or "security audit failed")
         data = []
@@ -650,22 +650,42 @@ class MaintenanceChecks:
             if len(fields) != 4 or not PACKAGE_RE.fullmatch(fields[0]):
                 raise ValueError("unsupported security audit output")
             data.append(
-                dict(package=fields[0], severity=fields[1], fixed_version=fields[2], cves=fields[3])
+                dict(
+                    package=fields[0],
+                    severity=fields[1],
+                    fixed_version=fields[2].strip(),
+                    cves=fields[3],
+                )
             )
         if data:
+            outdated = [entry["package"] for entry in data if entry["fixed_version"]]
+            unresolved = [entry["package"] for entry in data if not entry["fixed_version"]]
+            noun = "package" if len(data) == 1 else "packages"
+            if not outdated:
+                message = f"{len(data)} {noun} with unresolved security advisories"
+            elif unresolved:
+                message = (
+                    f"{len(data)} {noun} with security advisories "
+                    f"({len(outdated)} below fixed versions)"
+                )
+            else:
+                message = f"{len(data)} {noun} below advisory fixed versions"
+            unspecified = "not specified by tracker; needs review"
             return _result(
                 cid,
-                Severity.FAIL,
-                f"{len(data)} known vulnerable package findings",
-                "dotdoctor --sysup",
+                Severity.FAIL if outdated else Severity.WARN,
+                message,
+                "arch-audit -c",
                 advisories=data,
                 items=[
                     f'{entry["package"]}: {entry["severity"]} {entry["cves"]}; '
-                    f'fixed version: {entry["fixed_version"] or "not available"}'
+                    f'fixed version: {entry["fixed_version"] or unspecified}'
                     for entry in data
                 ],
+                outdated_packages=outdated,
+                unresolved_packages=unresolved,
                 blocks_upgrade=False,
-                verified=True,
+                verified=not unresolved,
                 coverage="Arch Security Tracker; excludes AUR and Flatpak",
             )
         return _result(
