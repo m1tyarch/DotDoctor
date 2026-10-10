@@ -20,6 +20,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Allow seven days between tmpfiles cleanup jobs and let configured timers
+  override built-in entries by unit and scope without duplicate checks.
 - Pass Paru's optional rebuild value as `--rebuild=yes` so `yes` cannot become
   an unintended package target; keep Yay's boolean `--rebuild` syntax.
 - Keep sudo credentials alive during Paru upgrades with `--sudoloop`, as for Yay.

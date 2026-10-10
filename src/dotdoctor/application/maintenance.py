@@ -289,18 +289,19 @@ class MaintenanceChecks:
         ]
 
     def timers(self) -> CheckResult:
-        configs = [
-            TimerConfig(unit="systemd-tmpfiles-clean.timer", max_age_days=2),
-            *self.config.maintenance.timers,
-        ]
+        defaults = [TimerConfig(unit="systemd-tmpfiles-clean.timer", max_age_days=7)]
         if (
             shutil.which("pacman")
             and "archlinux-keyring" in self.config.maintenance.keyring_packages
         ):
-            configs.append(TimerConfig(unit="archlinux-keyring-wkd-sync.timer", max_age_days=8))
+            defaults.append(TimerConfig(unit="archlinux-keyring-wkd-sync.timer", max_age_days=8))
+        configs = {
+            (config.unit, config.scope): config
+            for config in [*defaults, *self.config.maintenance.timers]
+        }
         issues: list[str] = []
         repairs: list[dict[str, str]] = []
-        for config in configs:
+        for config in configs.values():
             try:
                 timer = properties(config.unit, config.scope, timer=True)
                 if timer.get("ActiveState") == "inactive":

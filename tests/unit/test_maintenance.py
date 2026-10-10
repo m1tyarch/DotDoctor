@@ -165,6 +165,87 @@ def test_timer_success_never_inferred_from_last_trigger(monkeypatch):
     assert m.MaintenanceChecks().timers().severity == Severity.WARN
 
 
+@pytest.mark.parametrize(
+    "age,expected", [(6, Severity.PASS), (7, Severity.PASS), (7.01, Severity.WARN)]
+)
+def test_tmpfiles_timer_defaults_to_seven_day_freshness(monkeypatch, age, expected):
+    def props(unit, scope="system", timer=False):
+        if timer:
+            return {"ActiveState": "active", "Triggers": "systemd-tmpfiles-clean.service"}
+        return {
+            **healthy_service(),
+            "ExecMainExitTimestamp": datetime.fromtimestamp(NOW - age * 86400, UTC).isoformat(),
+        }
+
+    monkeypatch.setattr(m, "properties", props)
+    assert m.MaintenanceChecks().timers().severity == expected
+
+
+@pytest.mark.parametrize(
+    "unit", ["systemd-tmpfiles-clean.timer", "archlinux-keyring-wkd-sync.timer"]
+)
+@pytest.mark.parametrize("limit,age,expected", [(1, 2, Severity.WARN), (14, 9, Severity.PASS)])
+def test_configured_timer_overrides_default_without_duplicate_checks(
+    monkeypatch, unit, limit, age, expected
+):
+    config = DotDoctorConfig(
+        maintenance=MaintenanceConfig(timers=[TimerConfig(unit=unit, max_age_days=limit)])
+    )
+    monkeypatch.setattr(m.shutil, "which", lambda name: "/bin/pacman" if name == "pacman" else None)
+    calls = []
+
+    def props(name, scope="system", timer=False):
+        calls.append((name, scope, timer))
+        if timer:
+            return {"ActiveState": "active", "Triggers": name.replace(".timer", ".service")}
+        if name == unit.replace(".timer", ".service"):
+            return {
+                **healthy_service(),
+                "ExecMainExitTimestamp": datetime.fromtimestamp(NOW - age * 86400, UTC).isoformat(),
+            }
+        return healthy_service()
+
+    monkeypatch.setattr(m, "properties", props)
+    result = m.MaintenanceChecks(config).timers()
+    assert result.severity == expected
+    assert calls == [
+        ("systemd-tmpfiles-clean.timer", "system", True),
+        ("systemd-tmpfiles-clean.service", "system", False),
+        ("archlinux-keyring-wkd-sync.timer", "system", True),
+        ("archlinux-keyring-wkd-sync.service", "system", False),
+    ]
+    if expected == Severity.WARN:
+        assert result.details["items"] == [f"{unit}: last success {age:.1f} days ago"]
+
+
+def test_same_timer_name_in_different_scopes_is_checked_separately(monkeypatch):
+    unit = "systemd-tmpfiles-clean.timer"
+    config = DotDoctorConfig(
+        maintenance=MaintenanceConfig(timers=[TimerConfig(unit=unit, scope="user", max_age_days=1)])
+    )
+    calls = []
+
+    def props(name, scope="system", timer=False):
+        calls.append((name, scope, timer))
+        if timer:
+            return {"ActiveState": "active", "Triggers": "systemd-tmpfiles-clean.service"}
+        return {
+            **healthy_service(),
+            "ExecMainExitTimestamp": datetime.fromtimestamp(NOW - 3 * 86400, UTC).isoformat(),
+        }
+
+    monkeypatch.setattr(m, "properties", props)
+    result = m.MaintenanceChecks(config).timers()
+    assert result.severity == Severity.WARN
+    assert result.details["items"] == [f"{unit}: last success 3.0 days ago"]
+    assert calls == [
+        (unit, "system", True),
+        ("systemd-tmpfiles-clean.service", "system", False),
+        (unit, "user", True),
+        ("systemd-tmpfiles-clean.service", "user", False),
+    ]
+
+
 def test_only_expected_timers_get_repair_actions(monkeypatch):
     config = DotDoctorConfig(
         maintenance=MaintenanceConfig(timers=[TimerConfig(unit="backup.timer", scope="user")])

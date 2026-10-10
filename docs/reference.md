@@ -142,10 +142,13 @@ failed, or stale backups block upgrades. DotDoctor does not assume a backup serv
 name, choose a destination, or invent a successful copy.
 
 Additional expected timers can be configured with `unit`, `scope`, and `max_age_days`.
-The built-in `systemd-tmpfiles-clean.timer` has a two-day freshness limit;
+The built-in `systemd-tmpfiles-clean.timer` has a seven-day freshness limit;
 `archlinux-keyring-wkd-sync.timer` has an eight-day limit and is expected when
 pacman is available and archlinux-keyring is configured. Their triggered services
 are checked too. Other timers are checked only when listed in the configuration.
+Configured timers override built-in entries with the same `(unit, scope)`,
+including their freshness limit, and are checked once. Entries with the same
+unit name in different scopes remain separate checks.
 
 `--fix` asks separately before enabling expected timers, starting the existing TRIM
 service, running a configured backup, scrubbing an overdue Btrfs filesystem, or
