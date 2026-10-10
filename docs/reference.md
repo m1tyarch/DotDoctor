@@ -150,6 +150,14 @@ Configured timers override built-in entries with the same `(unit, scope)`,
 including their freshness limit, and are checked once. Entries with the same
 unit name in different scopes remain separate checks.
 
+TRIM, scrub, timer, and backup fixes show the current action and result-checking
+stage. Interactive terminals animate a dot spinner while a command waits, even
+when it produces no output. Pipes, dumb terminals, and animation opt-outs show
+static stage messages. Sudo authentication happens outside the spinner; commands
+inside it cannot prompt for input. A successful command is followed by a recheck
+before the finding can become PASS. In particular, starting the existing TRIM
+service waits for its work to finish and can take a minute or longer.
+
 `--fix` asks separately before enabling expected timers, starting the existing TRIM
 service, running a configured backup, scrubbing an overdue Btrfs filesystem, or
 reinstalling selected official packages through a full upgrade. These new actions

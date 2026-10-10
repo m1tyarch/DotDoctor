@@ -22,6 +22,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Show progress during silent TRIM, scrub, timer and backup actions and their
+  verification; authenticate sudo outside live displays and reveal command failures.
 - Allow Rich 15, used by current Arch packages, alongside Rich 14.
 - Allow seven days between tmpfiles cleanup jobs and let configured timers
   override built-in entries by unit and scope without duplicate checks.

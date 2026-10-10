@@ -1,13 +1,19 @@
+import os
 import shutil
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import typer
 from rich.console import Console
+from rich.live import Live
+from rich.spinner import Spinner
+from rich.table import Table
+from rich.text import Text
 
 from dotdoctor.application.maintenance import PACKAGE_RE, MaintenanceChecks
-from dotdoctor.cli.theme import format_status_line
+from dotdoctor.cli.theme import GAP, INDENT, STATUS_WIDTH, format_status_line
 from dotdoctor.domain.config import DotDoctorConfig
 from dotdoctor.domain.context import ScanContext
 from dotdoctor.domain.models import CheckResult, ScanReport, Severity
@@ -117,7 +123,13 @@ class InteractiveAutoFixer:
                 return ScanReport(profile=report.profile, results=results)
 
             if outcome.changed:
-                verified = self._verify(result, context)
+                if result.check_id in {"sys.trim", "sys.btrfs", "sys.timers", "sys.backup"}:
+                    with self._maintenance_progress(
+                        f"Checking {result.check_id} after maintenance"
+                    ):
+                        verified = self._verify(result, context)
+                else:
+                    verified = self._verify(result, context)
                 results[index] = verified
                 if verified.severity != Severity.PASS:
                     for line in format_status_line(
@@ -458,11 +470,85 @@ class InteractiveAutoFixer:
                 )
         if not commands:
             return FixOutcome(False, "No safe automated action is available.")
+        if any(command[0] == "sudo" for command in commands):
+            try:
+                cached = subprocess.run(
+                    ["sudo", "-n", "-v"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if cached.returncode:
+                    self._console.print("  [dim]Caching sudo credentials[/dim]")
+                    credentials = subprocess.run(["sudo", "-v"], check=False, timeout=120)
+                    if credentials.returncode:
+                        return FixOutcome(
+                            False, "Sudo authentication failed; maintenance not started."
+                        )
+            except subprocess.TimeoutExpired:
+                return FixOutcome(False, "Sudo authentication timed out; maintenance not started.")
+
         for command in commands:
-            completed = subprocess.run(command, check=False)
+            label = self._maintenance_command_label(command, result.check_id)
+            if command[0] == "sudo":
+                command = ["sudo", "-n", *command[1:]]
+            if "systemctl" in command:
+                index = command.index("systemctl") + 1
+                command = [*command[:index], "--no-ask-password", *command[index:]]
+            with self._maintenance_progress(label):
+                completed = subprocess.run(
+                    command,
+                    check=False,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                )
             if completed.returncode:
-                return FixOutcome(False, f"Action failed (exit={completed.returncode}).")
+                error = getattr(completed, "stderr", "") or getattr(completed, "stdout", "") or ""
+                for message in error.strip().splitlines()[-3:]:
+                    for line in format_status_line("", message):
+                        self._console.print(line)
+                return FixOutcome(False, f"{label} failed (exit={completed.returncode}).")
         return FixOutcome(True, "Maintenance action completed.")
+
+    @staticmethod
+    def _maintenance_command_label(command: list[str], check_id: str) -> str:
+        if check_id == "sys.trim":
+            return (
+                "Enabling weekly TRIM"
+                if command[-1] == "fstrim.timer"
+                else "Waiting for TRIM service to finish"
+            )
+        if check_id == "sys.btrfs":
+            return f"Scrubbing Btrfs filesystem {command[-1]}"
+        if check_id == "sys.timers":
+            return f"Enabling maintenance timer {command[-1]}"
+        return f"Starting backup service {command[-1]}"
+
+    @contextmanager
+    def _maintenance_progress(self, label: str) -> Iterator[None]:
+        animated = (
+            self._console.is_terminal
+            and not self._console.is_dumb_terminal
+            and not os.environ.get("NO_ANIMATION")
+            and not os.environ.get("DOTDOCTOR_NO_ANIMATION")
+            and not os.environ.get("NO_COLOR")
+        )
+        if not animated:
+            for line in format_status_line("", label):
+                line.stylize("dim")
+                self._console.print(line)
+            yield
+            return
+        grid = Table.grid(expand=False)
+        grid.add_column()
+        grid.add_column(width=STATUS_WIDTH)
+        grid.add_column()
+        grid.add_column()
+        grid.add_row(INDENT, Spinner("dots"), GAP, Text(label, style="dim"))
+        with Live(grid, console=self._console, transient=True, refresh_per_second=10):
+            yield
 
     def _fix_sys_disk(self, context: ScanContext, result: CheckResult) -> FixOutcome:
         notes: list[str] = []
