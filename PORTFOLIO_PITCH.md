@@ -1,4 +1,4 @@
-# DotDoctor Portfolio Pitch
+# DotDoctor Pitch
 
 ## 30-second pitch
 
