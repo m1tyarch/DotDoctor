@@ -177,7 +177,7 @@ def _run_tasks_with_progress(
                 st_renderable = format_check_status(result)
                 message = Text(
                     " ".join(result.message.split()),
-                    style="dim" if result.severity == Severity.PASS else "",
+                    style="dim" if result.severity in {Severity.PASS, Severity.SKIP} else "",
                 )
             elif task.check_id in results:
                 st_renderable = Text(STATUS_SKIP, style=STYLE_SKIP)
@@ -270,7 +270,16 @@ def _system_fix_impl(
     issues = [r for r in report.results if r.severity in {Severity.WARN, Severity.FAIL}]
 
     if not issues:
-        console.print("  [dim green]PASS[/dim green]  System hygiene clean.")
+        skipped = [r for r in report.results if r.severity == Severity.SKIP]
+        if skipped:
+            render_terminal_report(
+                ScanReport(profile="system", results=skipped),
+                console,
+                print_header=False,
+                verbose=verbose,
+            )
+        else:
+            console.print("  [dim green]PASS[/dim green]  System hygiene clean.")
         console.print("\n[dim]Nothing to fix.[/dim]")
         if json_output is not None:
             json_output.parent.mkdir(parents=True, exist_ok=True)

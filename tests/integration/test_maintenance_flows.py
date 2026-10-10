@@ -1,4 +1,5 @@
 import io
+import json
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -266,12 +267,12 @@ def test_residual_vulnerability_is_reported_after_upgrade(monkeypatch, environme
 
 
 @pytest.mark.parametrize("width", [48, 120])
-def test_incomplete_security_metadata_after_upgrade_is_visible_without_transaction_failure(
+def test_incomplete_security_metadata_does_not_warn_after_upgrade(
     monkeypatch, environment, context, width
 ):
     security = CheckResult(
         check_id="sys.security",
-        severity=Severity.WARN,
+        severity=Severity.SKIP,
         message="1 package with unresolved security advisories",
         remediation="arch-audit -c",
         details={
@@ -289,12 +290,9 @@ def test_incomplete_security_metadata_after_upgrade_is_visible_without_transacti
     assert upgrade().run(context, Console(file=output, width=width, no_color=True)) == 0
     rendered = output.getvalue()
     normalized = " ".join(rendered.split())
-    assert "WARN sys.security" in normalized
-    assert "pam: High CVE-2025-6020" in normalized
-    assert "not specified by tracker; needs review" in normalized
-    assert "fix: arch-audit -c" in normalized
-    assert "Post-update checks require attention" in normalized
-    assert "All updates completed successfully" not in rendered
+    assert "WARN" not in normalized
+    assert "Post-update checks require attention" not in normalized
+    assert "Nothing to update." in normalized
     assert "FAIL" not in rendered and "failed" not in rendered
     assert "\x1b[" not in rendered
     assert all(len(line) <= width for line in rendered.splitlines())
@@ -380,19 +378,101 @@ def test_integrity_reinstall_occurs_in_a_full_upgrade(monkeypatch, environment, 
     assert all("-S" not in cmd for cmd in environment)
 
 
-def test_unconfigured_backup_does_not_offer_a_nonexistent_fix(monkeypatch, environment, context):
-    monkeypatch.setattr(s.SystemDryRunService, "build_tasks", lambda *args, **kwargs: [])
+@pytest.mark.parametrize("mode", [[], ["--fix"], ["--sysup"]])
+def test_normal_vm_with_missing_history_has_no_warnings_or_fix_prompts(
+    monkeypatch, environment, tmp_path, mode
+):
+    ids = frozenset({"sys.keyring", "sys.security", "sys.backup", "sys.timers"})
+    original_build = s.SystemDryRunService.build_tasks
+
+    def build(self, context, disabled_checks=None, include_checks=None):
+        return original_build(
+            self,
+            context,
+            disabled_checks=disabled_checks,
+            include_checks=ids if include_checks is None else ids & include_checks,
+        )
+
+    monkeypatch.setattr(s.SystemDryRunService, "build_tasks", build)
     monkeypatch.setattr(
-        s.SystemDryRunService,
-        "run_with_progress",
-        lambda *args, **kwargs: ScanReport(
-            profile="system", results=[m.MaintenanceChecks().backup()]
+        s.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in {"pacman", "systemctl", "arch-audit"} else None,
+    )
+    commands = []
+
+    def capture(command, *args):
+        commands.append(command)
+        assert command[0] in {"pacman", "arch-audit"}
+        return SimpleNamespace(
+            returncode=0,
+            stdout="pam\tHigh\t\tCVE-2025-6020\n" if command[0] == "arch-audit" else "",
+            stderr="",
+        )
+
+    monkeypatch.setattr(m, "capture", capture)
+    monkeypatch.setattr(
+        m,
+        "properties",
+        lambda unit, scope="system", timer=False: (
+            {"ActiveState": "active", "Triggers": unit.replace(".timer", ".service")}
+            if timer
+            else {
+                "ActiveState": "inactive",
+                "Result": "success",
+                "ExecMainStatus": "0",
+                "ExecMainExitTimestamp": "",
+                "ConditionResult": "no",
+                "AssertResult": "no",
+            }
         ),
     )
-    result = CliRunner().invoke(app, [])
-    assert result.exit_code == 0
-    assert "backup is not configured" in result.stdout
-    assert "Apply fixes" not in result.stdout
+    monkeypatch.setattr(m, "service_completion_timestamp", lambda *args: None)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("A neutral result must not offer a repair or update")
+
+    monkeypatch.setattr(s.typer, "confirm", forbidden)
+    monkeypatch.setattr(s.SystemUpgradeService, "run", forbidden)
+    monkeypatch.setattr("dotdoctor.cli.app.load_config", lambda *args: DotDoctorConfig())
+    report_path = tmp_path / "report.json"
+    args = mode if mode == ["--sysup"] else [*mode, "--json-output", str(report_path)]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0, result.output
+    assert "WARN" not in result.output and "FAIL" not in result.output
+    assert "sys.backup" not in result.output
+    assert "Apply fixes" not in result.output and "fix:" not in result.output
+    assert not environment
+    if mode != ["--sysup"]:
+        report = ScanReport.model_validate(json.loads(report_path.read_text()))
+        assert report.summary["SKIP"] >= 1
+        assert report.summary["WARN"] == report.summary["FAIL"] == 0
+        assert all(item.check_id != "sys.backup" for item in report.results)
+        assert report.get_result("sys.timers").severity == Severity.SKIP
+        assert "All" not in result.output
+        if not mode:
+            assert report.get_result("sys.security").details["unresolved_packages"] == ["pam"]
+
+
+def test_enabling_a_timer_without_history_does_not_invent_a_successful_job(
+    monkeypatch, environment, context
+):
+    output = io.StringIO()
+    fixer = InteractiveAutoFixer(Console(file=output))
+    initial = finding(
+        "sys.timers", timers=[{"unit": "systemd-tmpfiles-clean.timer", "scope": "system"}]
+    )
+    neutral = finding("sys.timers", Severity.SKIP, verified=False, timers=[])
+    monkeypatch.setattr(s.typer, "confirm", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        fixer, "_resolve_fix_handler", lambda cid: lambda ctx, result: FixOutcome(True, "enabled")
+    )
+    monkeypatch.setattr(m.MaintenanceChecks, "run", lambda *args: [neutral])
+    result = fixer.apply(ScanReport(profile="system", results=[initial]), context)
+    assert result.results == [neutral]
+    assert "DONE" in output.getvalue()
+    assert "WARN" not in output.getvalue() and "PASS" not in output.getvalue()
+    assert not fixer.can_fix(neutral)
 
 
 @pytest.mark.parametrize("code", [1, 2, 3])

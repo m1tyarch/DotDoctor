@@ -9,6 +9,7 @@ class Severity(StrEnum):
     OUTD = "OUTD"
     WARN = "WARN"
     FAIL = "FAIL"
+    SKIP = "SKIP"
 
 
 class CheckResult(BaseModel):
@@ -29,6 +30,7 @@ class ScanReport(BaseModel):
         outd_count = 0
         warn_count = 0
         fail_count = 0
+        skip_count = 0
 
         for result in self.results:
             if result.severity is Severity.PASS:
@@ -37,6 +39,8 @@ class ScanReport(BaseModel):
                 outd_count += 1
             elif result.severity is Severity.WARN:
                 warn_count += 1
+            elif result.severity is Severity.SKIP:
+                skip_count += 1
             else:
                 fail_count += 1
 
@@ -45,6 +49,7 @@ class ScanReport(BaseModel):
             "OUTD": outd_count,
             "WARN": warn_count,
             "FAIL": fail_count,
+            "SKIP": skip_count,
         }
 
     @property

@@ -18,6 +18,7 @@ NEWS_URL = "https://archlinux.org/feeds/news/"
 # Stable systemd MESSAGE_IDs: completion, failure, skipped job and new start.
 # Query all outcomes so an older success cannot hide a later unsuccessful run.
 UNIT_SUCCESS = "7ad2d189f7e94e70a38c781354912448"
+UNIT_FAILURES = {"d9b373ed55a64feb8242e02dbe79a49c", "be02cf6855d2428ba40df7e9d022f03d"}
 UNIT_OUTCOMES = (
     UNIT_SUCCESS,
     "d9b373ed55a64feb8242e02dbe79a49c",  # UNIT_FAILURE_RESULT
@@ -25,6 +26,10 @@ UNIT_OUTCOMES = (
     "0e4284a0caca4bfc81c0bb6786972673",  # UNIT_SKIPPED
     "7d4958e842da4a758f6c1cdc7b36dcc5",  # UNIT_STARTING
 )
+
+
+class ServiceJobFailed(ValueError):
+    """The latest relevant manager event records a failed service job."""
 
 
 def capture(command: list[str], timeout: int = 15) -> subprocess.CompletedProcess[str]:
@@ -89,7 +94,7 @@ def service_completion_timestamp(unit: str, scope: str = "system") -> float | No
     record = json.loads(result.stdout)
     if not isinstance(record, dict):
         raise ValueError("invalid service completion journal")
-    if record.get(field) != unit or record.get("MESSAGE_ID") != UNIT_SUCCESS:
+    if record.get(field) != unit or record.get("MESSAGE_ID") not in {UNIT_SUCCESS, *UNIT_FAILURES}:
         return None
     if (
         record.get("SYSLOG_IDENTIFIER") != "systemd"
@@ -99,6 +104,8 @@ def service_completion_timestamp(unit: str, scope: str = "system") -> float | No
     value = record.get("__REALTIME_TIMESTAMP", "")
     if not isinstance(value, str) or not value.isdigit():
         raise ValueError("invalid service completion journal timestamp")
+    if record["MESSAGE_ID"] in UNIT_FAILURES:
+        raise ServiceJobFailed("last recorded service job failed")
     return int(value) / 1_000_000
 
 

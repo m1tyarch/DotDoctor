@@ -31,7 +31,7 @@ fully isolated from application code.
 ```
 src/dotdoctor/
 ├── domain/             # Models, context and configuration (ZERO external I/O)
-│   ├── models.py       # Severity (PASS, OUTD, WARN, FAIL), CheckResult, ScanReport
+│   ├── models.py       # Severity (PASS, OUTD, WARN, FAIL, SKIP), CheckResult, ScanReport
 │   ├── context.py      # ScanContext (paths, environment, shell)
 │   └── config.py       # DotDoctorConfig model
 ├── application/        # Application services & orchestrators
@@ -71,6 +71,7 @@ When modifying, adding, or refactoring CLI outputs or checks, **strictly adhere 
 | Scan / Checks | `WARN` | `yellow` | Non-critical finding or missing checker tool |
 | Scan / Checks | `FAIL` | `bold red` | Critical error, failure, or security issue |
 | Scan / Checks | `OLD` | `cyan` | Updates available (mapped from internal `OUTD`) |
+| Scan / Checks | `SKIP` | `dim` | Neutral, unverified result; no actionable finding established |
 | Steps / Sysup | `DONE` | `dim green` | Step finished successfully |
 | Steps / Sysup | `SKIP` | `dim` | Step skipped (tool not installed, etc.) |
 | Steps / Sysup | `FAIL` | `bold red` | Step failed during execution |
@@ -82,7 +83,7 @@ When modifying, adding, or refactoring CLI outputs or checks, **strictly adhere 
 - Header format: `DotDoctor · <profile or mode>` (the second part is `dim`). Printed **once** at start, followed by an empty line.
 - Live progress must be **transient** (`Live(..., transient=True)`) and inline. **Never** use `screen=True` (no alternate screen flickering).
 - While checks/steps are running: show a dot spinner (`Spinner("dots")`) in the status column. Do **not** print text like "Running".
-- On check completion, replace its spinner with PASS/WARN/FAIL/OLD and a short
+- On check completion, replace its spinner with PASS/WARN/FAIL/OLD/SKIP and a short
   result in the same row. Keep row order, truncate live messages to one line, and
   preserve parallel execution without artificial delays. A task returning no
   result uses SKIP, never an invented PASS. DONE belongs to successful action steps.
@@ -157,6 +158,13 @@ Audit results use `on_task_result` for live statuses; retain the existing
 `on_task_complete` callback for compatibility. Pass the prepared tasks to execution
 instead of building another plan. Optional absent tools may omit checks entirely;
 never describe an omitted check as verified coverage.
+
+Backup monitoring is opt-in: omit sys.backup when no adapter is configured.
+Missing completion history for an active timer and incomplete security metadata
+use neutral SKIP, with details retained in JSON and verbose reports. Do not infer
+PASS from a timer being active or WARN from missing history alone. Retain WARN for
+confirmed service failures, inactive expected timers and overdue verified jobs.
+Keyring file checks do not require NTP to be enabled or synchronized.
 
 Scan/fix exit codes are 0 without FAIL (including WARN/OUTD) and 2 with FAIL.
 Handled YAML configuration errors return 3. Upgrade failures use 1/2/3 depending

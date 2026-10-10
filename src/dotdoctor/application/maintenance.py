@@ -18,6 +18,7 @@ from dotdoctor.domain.context import ScanContext
 from dotdoctor.domain.models import CheckResult, Severity
 from dotdoctor.infrastructure.maintenance import (
     MaintenanceState,
+    ServiceJobFailed,
     capture,
     fetch_news,
     properties,
@@ -128,7 +129,8 @@ class MaintenanceChecks:
                 checks.append(("sys.security", "Known package vulnerabilities", self.security))
             if shutil.which("checkrebuild"):
                 checks.append(("sys.rebuild", "Package rebuilds", self.rebuild))
-        checks.append(("sys.backup", "Backup freshness", self.backup))
+        if self.config.maintenance.backup is not None:
+            checks.append(("sys.backup", "Backup freshness", self.backup))
         if shutil.which("systemctl"):
             checks.append(("sys.timers", "Scheduled maintenance", self.timers))
         if shutil.which("lsblk"):
@@ -198,19 +200,10 @@ class MaintenanceChecks:
                 f"sudo pacman -Sy {shlex.join(packages)} && sudo pacman -Su",
                 blocks_upgrade=True,
             )
-        clock = capture(["timedatectl", "show", "--property=NTPSynchronized", "--value"])
-        if clock.returncode or clock.stdout.strip() != "yes":
-            return _result(
-                cid,
-                Severity.WARN,
-                "clock synchronization is not verified; signatures depend on time",
-                "timedatectl status",
-                keyrings=packages,
-            )
         return _result(
             cid,
             Severity.PASS,
-            "keyring files present; clock synchronized",
+            "keyring package files present",
             keyrings=packages,
             signatures_verified=False,
         )
@@ -236,9 +229,8 @@ class MaintenanceChecks:
         if config is None:
             return _result(
                 cid,
-                Severity.WARN,
-                "backup is not configured; recovery is not verified",
-                "configure maintenance.backup in dotdoctor.yml",
+                Severity.SKIP,
+                "backup monitoring is not configured",
                 verified=False,
             )
         service = properties(config.service, config.scope)
@@ -302,6 +294,7 @@ class MaintenanceChecks:
             for config in [*defaults, *self.config.maintenance.timers]
         }
         issues: list[str] = []
+        unverified: list[str] = []
         repairs: list[dict[str, str]] = []
         for config in configs.values():
             try:
@@ -309,51 +302,73 @@ class MaintenanceChecks:
                 if timer.get("ActiveState") == "inactive":
                     issues.append(f"{config.unit}: expected timer is inactive")
                     repairs.append({"unit": config.unit, "scope": config.scope})
+                elif timer.get("ActiveState") != "active":
+                    issues.append(f"{config.unit}: expected timer is not active")
                 trigger = timer.get("Triggers", "").split()
                 if not trigger:
                     raise ValueError("no triggered service")
                 service = properties(trigger[0], config.scope)
-                if service.get("Result") not in {None, "success"} or service.get(
-                    "ExecMainStatus"
-                ) not in {None, "0"}:
+                if (
+                    service.get("ActiveState") == "failed"
+                    or service.get("Result") not in {None, "success"}
+                    or service.get("ExecMainStatus") not in {None, "0"}
+                ):
                     issues.append(
                         f"{config.unit}: last job failed "
                         f"(Result={service.get('Result', 'unknown')}, "
                         f"exit={service.get('ExecMainStatus', 'unknown')})"
                     )
+                elif service.get("AssertResult") == "no" and service.get(
+                    "AssertTimestamp", ""
+                ) not in {"", "n/a", "0"}:
+                    issues.append(f"{config.unit}: service assertion failed; job did not run")
+                elif service.get("ConditionResult") == "no" and service.get(
+                    "ConditionTimestamp", ""
+                ) not in {"", "n/a", "0"}:
+                    unverified.append(f"{config.unit}: service skipped by condition")
+                elif service.get("ActiveState") in {"active", "activating", "deactivating"}:
+                    unverified.append(f"{config.unit}: service execution in progress")
                 elif service.get("ExecMainExitTimestamp", "") in {"", "n/a", "0"}:
                     completed = None
                     if service.get("ActiveState") == "inactive" and all(
                         service.get(name, "") in {"", "n/a", "0"}
                         for name in ("ConditionTimestamp", "AssertTimestamp")
                     ):
-                        completed = service_completion_timestamp(trigger[0], config.scope)
+                        try:
+                            completed = service_completion_timestamp(trigger[0], config.scope)
+                        except ServiceJobFailed as exc:
+                            issues.append(f"{config.unit}: {exc}")
+                            continue
+                        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                            unverified.append(
+                                f"{config.unit}: completion history unavailable ({exc})"
+                            )
+                            continue
                     if completed is None:
-                        issues.append(f"{config.unit}: no completed execution recorded")
+                        unverified.append(f"{config.unit}: completion history unavailable")
                     elif (
                         timer.get("LastTriggerUSec", "") not in {"", "n/a", "0"}
                         and timestamp(timer["LastTriggerUSec"]) > completed
                     ):
-                        issues.append(f"{config.unit}: latest trigger has no verified completion")
+                        unverified.append(
+                            f"{config.unit}: latest trigger has no verified completion"
+                        )
                     else:
                         age = _age_days(completed)
                         if age > config.max_age_days:
                             issues.append(f"{config.unit}: last success {age:.1f} days ago")
                 elif service.get("AssertResult") == "no":
-                    issues.append(f"{config.unit}: service assertion failed; job did not run")
+                    unverified.append(f"{config.unit}: assertion result has no execution timestamp")
                 elif service.get("ConditionResult") == "no":
-                    issues.append(
+                    unverified.append(
                         f"{config.unit}: service skipped by condition; last success is not verified"
                     )
                 elif not service_succeeded(service):
-                    issues.append(f"{config.unit}: last job success is not verified")
+                    unverified.append(f"{config.unit}: last job success is not verified")
                 else:
                     age = _age_days(service.get("ExecMainExitTimestamp", ""))
                     if age > config.max_age_days:
                         issues.append(f"{config.unit}: last success {age:.1f} days ago")
-                if timer.get("ActiveState") != "active":
-                    if timer.get("ActiveState") != "inactive":
-                        issues.append(f"{config.unit}: expected timer is not active")
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 issues.append(f"{config.unit}: {exc}")
         if issues:
@@ -364,6 +379,16 @@ class MaintenanceChecks:
                 "inspect the listed timer and service logs",
                 items=issues,
                 timers=repairs,
+                unverified_jobs=unverified,
+            )
+        if unverified:
+            return _result(
+                "sys.timers",
+                Severity.SKIP,
+                "expected timers active; job completion not verified",
+                items=unverified,
+                timers=[],
+                verified=False,
             )
         return _result(
             "sys.timers", Severity.PASS, "expected timers and their latest jobs succeeded"
@@ -673,7 +698,7 @@ class MaintenanceChecks:
             unspecified = "not specified by tracker; needs review"
             return _result(
                 cid,
-                Severity.FAIL if outdated else Severity.WARN,
+                Severity.FAIL if outdated else Severity.SKIP,
                 message,
                 "arch-audit -c",
                 advisories=data,

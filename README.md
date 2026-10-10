@@ -81,7 +81,8 @@ dotdoctor --disable-check sys.firmware
 ```
 
 JSON export is available for the default and fix modes. JSON uses `OUTD` for
-terminal `OLD`. Disabling a package-manager check excludes its audit, not its
+terminal `OLD` and `SKIP` for neutral, unverified results.
+Disabling a package-manager check excludes its audit, not its
 update transaction. See [reporting and exit codes](docs/reference.md#exit-codes)
 for automation: warnings alone do not produce a nonzero scan exit code.
 
@@ -97,10 +98,15 @@ To adjust checks or connect an existing maintenance job, start with
 dotdoctor --config /path/to/config.yml
 ```
 
-Backups are not created automatically. An unconfigured backup is reported as
-`WARN`; snapshots do not replace a verified backup. Optional tools such as
+Backup monitoring is opt-in: without a configured adapter, `sys.backup` is omitted.
+Backups are not created automatically; snapshots do not replace a verified backup.
+Optional tools such as
 `arch-audit` or `smartctl` add coverage when installed. A clean report describes
 the checks performed, not every possible system failure.
+
+`WARN` and `FAIL` identify problems requiring attention. An active timer without
+completion history uses a neutral `SKIP`, with details available through `-v`
+or JSON. It is counted separately from passed checks.
 
 [Configuration and maintenance](docs/reference.md#configuration) covers file
 precedence, intervals, timers, and the backup adapter.

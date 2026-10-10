@@ -12,7 +12,7 @@ statuses, suggested actions, and JSON export for audit/fix reports.
 ## Problems solved
 
 - Repeating separate commands to check updates, disk space, failed services, and cache.
-- Missing `.pacnew` files, stale maintenance jobs, or an unconfigured backup.
+- Pending `.pacnew` merges, stale maintenance jobs, or an overdue configured backup.
 - Starting updates without reviewing Arch notices or detecting blocking findings.
 - Waiting for the slowest check before seeing any useful result.
 
@@ -21,7 +21,7 @@ statuses, suggested actions, and JSON export for audit/fix reports.
 - Layered architecture (CLI/application/domain/infrastructure).
 - One prepared audit plan for progress and parallel execution; results retain plan order.
 - Scoped subprocess groups that allow Ctrl+C to cancel audit readers, including news fetching.
-- Fixed status rows: pending spinner becomes PASS/WARN/FAIL/OLD with the real finding.
+- Fixed status rows: pending spinner becomes PASS/WARN/FAIL/OLD or neutral SKIP.
 - Pre/post-update checks, conditional snapshots, keyring preparation, and bounded recovery attempts.
 - Interactive fixes with verification afterward; command success alone does not imply health.
 - YAML configuration, XDG state, JSON reports, and CI with a 75% coverage gate.

@@ -99,13 +99,16 @@ disabled_checks:
 section. Existing configurations with only `disabled_checks` continue to work.
 The three CLI modes are unchanged.
 
-The default audit includes `sys.keyring`, `sys.news`, `sys.backup`, `sys.timers`,
+The default audit includes `sys.keyring`, `sys.news`, `sys.timers`,
 `sys.trim`, `sys.smart`, `sys.btrfs`, `sys.mounts`, `sys.security`,
 `sys.package-db`, `sys.integrity`, and `sys.rebuild` checks when applicable.
 Checks are registered according to available tools. For example, `sys.security`
 is included only when pacman and arch-audit are installed; `sys.smart` requires
 lsblk and smartctl. An omitted check provides no health or security coverage.
-An included check that cannot read or verify its data reports WARN or FAIL.
+`sys.backup` is included only when an adapter is configured. WARN and FAIL identify
+actionable findings or concrete checker errors. Missing job history for active
+timers and incomplete advisory metadata use neutral SKIP instead of a warning or
+an invented PASS. SKIP is counted separately, with details in `-v` and JSON.
 Disabling a maintenance check also removes it from pre/postflight checks; this is
 an explicit coverage override. Separate upgrade guards for connectivity and
 root/boot disk space still run. Disabling a package-manager audit does not omit
@@ -114,20 +117,23 @@ that package manager's update transaction.
 `sys.security` reads installed-package advisories through
 [arch-audit](https://man.archlinux.org/man/arch-audit.1.en). Packages reported below
 an advisory's fixed version produce FAIL. Entries with no fixed-version data
-produce WARN and remain unverified: the tracker can be incomplete or outdated,
+produce neutral SKIP and remain unverified: the tracker can be incomplete or outdated,
 and those entries alone cannot establish whether the installed version is still
 affected. A mixed report remains FAIL when any package is below a fixed version.
-Unresolved entries are retained for manual review rather than counted as PASS.
+Unresolved entries are retained in JSON and verbose reports rather than counted
+as PASS. SKIP does not establish that a package is safe or affected.
 Use `arch-audit -c` to inspect CVEs and compare with upstream advisories.
-After upgrades, findings show check IDs, package details, and review commands;
+After upgrades, actionable findings show check IDs, package details, and review commands;
 remaining check findings are displayed separately from completed action counts.
 
 Reboot detection (`sys.reboot`) compares the running kernel version with installed
 module directories without sudo. Kernel journal scanning has been removed from
 audits and upgrade preflight checks.
 
-Backups are **not configured automatically**. Without a configured backup, DotDoctor
-reports WARN and does not offer a nonexistent backup fix. To connect an existing job:
+Backups are **not configured automatically**. Monitoring is opt-in: without a
+configured adapter, `sys.backup` is omitted from audits, fix mode and upgrade
+preflight. Leave `maintenance.backup: null` to keep it disabled.
+To monitor an existing job:
 
 ```yaml
 maintenance:
@@ -167,8 +173,11 @@ When that happens, DotDoctor checks the latest relevant manager event in the
 journal for a successful service completion, using systemd's stable
 [message identifiers](https://github.com/systemd/systemd/blob/main/src/systemd/sd-messages.h).
 A later failure, skipped job, or unfinished start cannot be replaced by an older
-success. Missing or unreadable completion history remains WARN; an enabled timer
-or a recorded trigger alone does not prove that its service succeeded.
+success. Missing or unreadable completion history for an active timer uses neutral
+SKIP; an enabled timer or a recorded trigger alone does not prove its service
+succeeded. Confirmed failures, inactive expected timers and overdue verified jobs
+remain WARN. A normal condition-based skip or a job still running does not produce
+a warning. Failure to read the expected unit itself remains a checker error.
 
 TRIM, scrub, timer, and backup fixes show the current action and result-checking
 stage. Interactive terminals animate a dot spinner while a command waits, even
@@ -186,7 +195,9 @@ manual diagnosis; resetting the failure marker is not treated as a repair.
 Timer auto-fixes currently enable inactive expected timers; they do not rerun a
 failed or unverified triggered service. Findings distinguish a failed job, a
 condition-based skip, an assertion failure, and missing completion records.
-An unverified or skipped job remains WARN; it is not counted as a successful run.
+An unverified or condition-skipped job uses SKIP; it is not counted as a successful
+run and does not offer an automatic fix. Enabling a timer can complete as DONE
+while its service history remains unverified.
 
 Reboot is offered after other fixes and defaults to no. Sudo authentication runs
 without a spinner, inherits the terminal, and has a 120-second timeout. The reboot
@@ -209,7 +220,7 @@ rejected; inspect `systemctl list-jobs` before retrying. DotDoctor never forces 
   an available fix. It does not cover all AUR, Flatpak, or third-party software.
 - Snapshot coverage and backup restorability still depend on their configuration.
   A clean report describes performed checks, not a guarantee against all failures.
-- `sys.keyring` checks installed keyring files and clock synchronization; it does
+- `sys.keyring` checks installed keyring files. NTP configuration is not checked; it does
   not independently verify all package signatures. Package transactions enforce
   signature verification.
 - The initial connectivity probe uses TCP port 53 on external DNS servers;
@@ -221,7 +232,7 @@ rejected; inspect `systemctl list-jobs` before retrying. DotDoctor never forces 
 
 | Code | Current meaning |
 | --- | --- |
-| `0` | Scan/fix has no FAIL; WARN and OUTD alone also return zero. Upgrade completed, or its initial audit reported no updates and no FAIL. |
+| `0` | Scan/fix has no FAIL; WARN, OUTD and neutral SKIP also return zero. Upgrade completed, or its initial audit reported no updates and no FAIL. |
 | `1` | Upgrade connectivity failure or unrecovered mirror/network failure. |
 | `2` | Scan/fix contains FAIL, an upgrade is blocked or fails, or CLI arguments are invalid. |
 | `3` | YAML parsing/schema error, or caching sudo credentials for an upgrade failed. |

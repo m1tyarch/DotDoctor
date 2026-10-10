@@ -19,6 +19,7 @@ def test_status_label_outd_mapped_to_old() -> None:
     assert _status_label(Severity.PASS) == "PASS"
     assert _status_label(Severity.WARN) == "WARN"
     assert _status_label(Severity.FAIL) == "FAIL"
+    assert _status_label(Severity.SKIP) == "SKIP"
 
 
 def test_status_styles() -> None:
@@ -26,6 +27,35 @@ def test_status_styles() -> None:
     assert _status_style(Severity.OUTD) == "cyan"
     assert _status_style(Severity.WARN) == "yellow"
     assert _status_style(Severity.FAIL) == "bold red"
+    assert _status_style(Severity.SKIP) == "dim"
+
+
+def test_neutral_checks_do_not_count_as_passed() -> None:
+    assert format_summary({"PASS": 1, "SKIP": 1}, all_passed=True).plain == "1 passed · 1 skipped"
+    assert format_summary({"SKIP": 1}).plain == "1 skipped"
+
+
+def test_neutral_details_are_available_only_in_verbose_output() -> None:
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(
+                check_id="sys.security",
+                severity=Severity.SKIP,
+                message="advisory applicability not verified",
+                remediation="arch-audit -c",
+                details={"items": ["pam: CVE-2025-6020; fixed version not specified"]},
+            )
+        ],
+    )
+    for verbose in (False, True):
+        output = io.StringIO()
+        render_terminal_report(report, Console(file=output, width=120), verbose=verbose)
+        rendered = output.getvalue()
+        assert "SKIP" in rendered and "1 skipped" in rendered
+        assert "fix:" not in rendered and "WARN" not in rendered and "FAIL" not in rendered
+        assert ("CVE-2025-6020" in rendered) is verbose
+        assert ("check: arch-audit -c" in rendered) is verbose
 
 
 def test_summary_all_passed() -> None:

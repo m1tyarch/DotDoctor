@@ -52,8 +52,24 @@ def checked(checks, cid, fn):
 
 def test_unconfigured_backup_is_not_a_pass():
     result = m.MaintenanceChecks().backup()
-    assert result.severity == Severity.WARN
+    assert result.severity == Severity.SKIP
     assert result.details["verified"] is False
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_backup_monitoring_is_registered_only_when_configured(configured, tmp_path):
+    config = DotDoctorConfig(
+        maintenance=MaintenanceConfig(
+            backup=(
+                BackupConfig(service="backup.service", status_command=["backup-status"])
+                if configured
+                else None
+            )
+        )
+    )
+    context = ScanContext("system", tmp_path, tmp_path, "/bin", "/bin/bash")
+    ids = [registration[0] for registration in m.MaintenanceChecks(config).registrations(context)]
+    assert ("sys.backup" in ids) is configured
 
 
 @pytest.mark.parametrize(
@@ -135,14 +151,21 @@ def test_active_timer_with_failed_service_is_not_healthy(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("values", "finding"),
+    ("values", "finding", "expected"),
     [
-        ({"ExecMainExitTimestamp": ""}, "no completed execution recorded"),
-        ({"ConditionResult": "no"}, "service skipped by condition"),
-        ({"AssertResult": "no"}, "service assertion failed"),
+        ({"ExecMainExitTimestamp": ""}, "completion history unavailable", Severity.SKIP),
+        ({"ConditionResult": "no"}, "service skipped by condition", Severity.SKIP),
+        ({"AssertResult": "no"}, "assertion result has no execution timestamp", Severity.SKIP),
+        (
+            {"AssertResult": "no", "AssertTimestamp": RECENT},
+            "service assertion failed",
+            Severity.WARN,
+        ),
     ],
 )
-def test_timer_distinguishes_unverified_jobs_from_failed_executions(monkeypatch, values, finding):
+def test_timer_distinguishes_unverified_jobs_from_failed_executions(
+    monkeypatch, values, finding, expected
+):
     def props(unit, scope="system", timer=False):
         if timer:
             return {"ActiveState": "active", "Triggers": "clean.service"}
@@ -150,7 +173,7 @@ def test_timer_distinguishes_unverified_jobs_from_failed_executions(monkeypatch,
 
     monkeypatch.setattr(m, "properties", props)
     result = m.MaintenanceChecks().timers()
-    assert result.severity == Severity.WARN
+    assert result.severity == expected
     assert finding in result.details["items"][0]
     assert "last job failed" not in result.details["items"][0]
     assert result.details["timers"] == []
@@ -191,15 +214,15 @@ def test_timer_recovers_unloaded_service_completion_from_journal(monkeypatch, ag
 
 
 @pytest.mark.parametrize(
-    "values",
+    "values,expected",
     [
-        {"ActiveState": "activating"},
-        {"Result": "exit-code", "ExecMainStatus": "1"},
-        {"ConditionResult": "no", "ConditionTimestamp": RECENT},
-        {"AssertResult": "no", "AssertTimestamp": RECENT},
+        ({"ActiveState": "activating"}, Severity.SKIP),
+        ({"Result": "exit-code", "ExecMainStatus": "1"}, Severity.WARN),
+        ({"ConditionResult": "no", "ConditionTimestamp": RECENT}, Severity.SKIP),
+        ({"AssertResult": "no", "AssertTimestamp": RECENT}, Severity.WARN),
     ],
 )
-def test_old_journal_success_cannot_hide_current_service_problems(monkeypatch, values):
+def test_old_journal_success_cannot_hide_current_service_problems(monkeypatch, values, expected):
     monkeypatch.setattr(
         m,
         "properties",
@@ -214,7 +237,7 @@ def test_old_journal_success_cannot_hide_current_service_problems(monkeypatch, v
         raise AssertionError("Do not replace a known current problem with old journal history")
 
     monkeypatch.setattr(m, "service_completion_timestamp", forbidden)
-    assert m.MaintenanceChecks().timers().severity == Severity.WARN
+    assert m.MaintenanceChecks().timers().severity == expected
 
 
 def test_journal_completion_before_latest_timer_trigger_is_unverified(monkeypatch):
@@ -229,11 +252,11 @@ def test_journal_completion_before_latest_timer_trigger_is_unverified(monkeypatc
     )
     monkeypatch.setattr(m, "service_completion_timestamp", lambda *args: NOW - 2 * 86400)
     result = m.MaintenanceChecks().timers()
-    assert result.severity == Severity.WARN
+    assert result.severity == Severity.SKIP
     assert "latest trigger has no verified completion" in result.details["items"][0]
 
 
-def test_unreadable_completion_history_is_a_warning(monkeypatch):
+def test_unreadable_completion_history_is_neutral(monkeypatch):
     monkeypatch.setattr(
         m,
         "properties",
@@ -249,7 +272,8 @@ def test_unreadable_completion_history_is_a_warning(monkeypatch):
 
     monkeypatch.setattr(m, "service_completion_timestamp", unavailable)
     result = m.MaintenanceChecks().timers()
-    assert result.severity == Severity.WARN
+    assert result.severity == Severity.SKIP
+    assert result.details["verified"] is False
     assert "service completion journal is unavailable" in result.details["items"][0]
 
 
@@ -305,15 +329,54 @@ def test_completion_reader_matches_service_scope_and_manager(monkeypatch, scope)
 
 
 @pytest.mark.parametrize(
-    "message_id", [value for value in readers.UNIT_OUTCOMES if value != readers.UNIT_SUCCESS]
+    "message_id",
+    [
+        value
+        for value in readers.UNIT_OUTCOMES
+        if value not in {readers.UNIT_SUCCESS, *readers.UNIT_FAILURES}
+    ],
 )
-def test_newer_failed_skipped_or_started_job_does_not_count_as_completion(monkeypatch, message_id):
+def test_newer_skipped_or_started_job_does_not_count_as_completion(monkeypatch, message_id):
     monkeypatch.setattr(
         readers,
         "capture",
         lambda *args: response(json.dumps({"UNIT": "clean.service", "MESSAGE_ID": message_id})),
     )
     assert readers.service_completion_timestamp("clean.service") is None
+
+
+@pytest.mark.parametrize("message_id", readers.UNIT_FAILURES)
+def test_journal_recovers_a_confirmed_failed_job(monkeypatch, message_id):
+    record = {
+        "UNIT": "clean.service",
+        "_PID": "1",
+        "SYSLOG_IDENTIFIER": "systemd",
+        "MESSAGE_ID": message_id,
+        "__REALTIME_TIMESTAMP": str(int(NOW * 1_000_000)),
+    }
+    monkeypatch.setattr(readers, "capture", lambda *args: response(json.dumps(record)))
+    with pytest.raises(readers.ServiceJobFailed, match="last recorded service job failed"):
+        readers.service_completion_timestamp("clean.service")
+
+
+def test_timer_with_reset_properties_retains_confirmed_journal_failure(monkeypatch):
+    monkeypatch.setattr(
+        m,
+        "properties",
+        lambda unit, scope="system", timer=False: (
+            {"ActiveState": "active", "Triggers": "clean.service"}
+            if timer
+            else {**healthy_service(), "ExecMainExitTimestamp": ""}
+        ),
+    )
+
+    def failed(*args):
+        raise readers.ServiceJobFailed("last recorded service job failed")
+
+    monkeypatch.setattr(m, "service_completion_timestamp", failed)
+    result = m.MaintenanceChecks().timers()
+    assert result.severity == Severity.WARN
+    assert "last recorded service job failed" in result.details["items"][0]
 
 
 @pytest.mark.parametrize(
@@ -502,7 +565,7 @@ def test_corrupt_news_state_is_never_a_pass(tmp_path, data):
     [
         ("", 0, Severity.PASS),
         ("openssl\tHigh\t3.0-2\tCVE-2026-0001\n", 0, Severity.FAIL),
-        ("openssl\tHigh\t\tCVE-2026-0001\n", 0, Severity.WARN),
+        ("openssl\tHigh\t\tCVE-2026-0001\n", 0, Severity.SKIP),
         ("", 1, Severity.WARN),
         ("unknown format", 0, Severity.WARN),
     ],
@@ -527,7 +590,7 @@ def test_security_includes_unfixed_and_rejects_errors(monkeypatch, stdout, code,
 @pytest.mark.parametrize(
     "stdout,expected,outdated,unresolved",
     [
-        ("pam\tHigh\t\tCVE-2025-6020\n", Severity.WARN, [], ["pam"]),
+        ("pam\tHigh\t\tCVE-2025-6020\n", Severity.SKIP, [], ["pam"]),
         ("pam\tHigh\t1.7.1-1\tCVE-2025-6020\n", Severity.FAIL, ["pam"], []),
         (
             "openssl\tHigh\t3.6.5-1\tCVE-2026-0001\npam\tHigh\t\tCVE-2025-6020\n",
@@ -746,14 +809,13 @@ def test_corrupt_state_not_overwritten(tmp_path):
     assert state.path.read_text() == "bad"
 
 
-@pytest.mark.parametrize("failure", ["none", "missing", "files", "clock"])
-def test_keyring_distinguishes_missing_files_and_unsynchronized_clock(monkeypatch, failure):
+@pytest.mark.parametrize("failure", ["none", "missing", "files"])
+def test_keyring_checks_package_files_without_requiring_ntp(monkeypatch, failure):
     commands = []
 
     def capture(cmd, *args):
         commands.append(cmd)
-        if cmd[0] == "timedatectl":
-            return response("no" if failure == "clock" else "yes")
+        assert cmd[0] != "timedatectl", "NTP configuration is not a keyring failure"
         return response(
             returncode=int(
                 (failure == "missing" and "-Q" in cmd) or (failure == "files" and "-Qk" in cmd)
@@ -766,7 +828,6 @@ def test_keyring_distinguishes_missing_files_and_unsynchronized_clock(monkeypatc
         "none": Severity.PASS,
         "missing": Severity.FAIL,
         "files": Severity.FAIL,
-        "clock": Severity.WARN,
     }
     assert result.severity == expected[failure]
     assert result.details.get("blocks_upgrade", False) == (failure in {"missing", "files"})
@@ -840,7 +901,7 @@ def test_parallel_scan_routes_registered_checks_and_respects_disables(monkeypatc
         disabled_checks=config.disabled_checks,
         include_checks=frozenset({"sys.keyring", "sys.backup", "sys.security"}),
     )
-    assert {item.check_id for item in report.results} == {"sys.backup", "sys.security"}
+    assert {item.check_id for item in report.results} == {"sys.security"}
     assert report.exit_code == 2
 
 

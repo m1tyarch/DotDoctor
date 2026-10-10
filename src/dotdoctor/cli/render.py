@@ -8,6 +8,7 @@ from dotdoctor.cli.theme import (
     STATUS_FAIL,
     STATUS_OLD,
     STATUS_PASS,
+    STATUS_SKIP,
     STATUS_STYLES,
     STATUS_WARN,
     STYLE_DEFAULT,
@@ -27,6 +28,8 @@ def _status_label(severity: Severity) -> str:
         return STATUS_WARN
     if severity == Severity.FAIL:
         return STATUS_FAIL
+    if severity == Severity.SKIP:
+        return STATUS_SKIP
     return severity.value
 
 
@@ -50,9 +53,10 @@ def format_summary(
     outd_count = summary.get("OUTD", 0)
     warn_count = summary.get("WARN", 0)
     fail_count = summary.get("FAIL", 0)
-    total = pass_count + outd_count + warn_count + fail_count
+    skip_count = summary.get("SKIP", 0)
+    total = pass_count + outd_count + warn_count + fail_count + skip_count
 
-    if all_passed or (is_final and total > 0 and pass_count == total):
+    if (all_passed and not skip_count) or (is_final and total > 0 and pass_count == total):
         ref_total = (
             total_target if total_target is not None else (total if total > 0 else pass_count)
         )
@@ -72,6 +76,8 @@ def format_summary(
         parts.append((f"{warn_count} {noun}", STYLE_WARN))
     if fail_count > 0:
         parts.append((f"{fail_count} failed", "red"))
+    if skip_count > 0:
+        parts.append((f"{skip_count} skipped", "dim"))
 
     if not parts:
         return Text("0 checks passed")
@@ -120,7 +126,7 @@ def render_terminal_report(
         label = _status_label(result.severity)
         st_style = _status_style(result.severity)
         id_str = result.check_id.ljust(max_id_len)
-        msg_style = "dim" if result.severity == Severity.PASS else None
+        msg_style = "dim" if result.severity in {Severity.PASS, Severity.SKIP} else None
 
         msg_lines = _wrap_text(result.message, msg_width)
 
@@ -144,7 +150,11 @@ def render_terminal_report(
         )
         item_noun = "item" if result.details.get("items") else "package"
         critical = result.details.get("critical") if result.details else None
-        if packages and isinstance(packages, list) and result.severity != Severity.PASS:
+        if (
+            packages
+            and isinstance(packages, list)
+            and (result.severity not in {Severity.PASS, Severity.SKIP} or verbose)
+        ):
             to_show: list[str] = []
             if verbose:
                 to_show = packages
@@ -175,8 +185,12 @@ def render_terminal_report(
                 omit_line.append(f"• ({omitted} more {noun}, use -v to show all)", style="dim")
                 console.print(omit_line)
 
-        if result.severity != Severity.PASS and result.remediation:
-            fix_text = f"fix: {result.remediation}"
+        if result.remediation and (
+            result.severity not in {Severity.PASS, Severity.SKIP}
+            or (result.severity == Severity.SKIP and verbose)
+        ):
+            label = "check" if result.severity == Severity.SKIP else "fix"
+            fix_text = f"{label}: {result.remediation}"
             fix_lines = _wrap_text(fix_text, msg_width)
             for fix_line in fix_lines:
                 f_line = Text(indent_spaces)

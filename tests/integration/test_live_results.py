@@ -26,6 +26,7 @@ def context(tmp_path):
         (Severity.OUTD, "OLD"),
         (Severity.WARN, "WARN"),
         (Severity.FAIL, "FAIL"),
+        (Severity.SKIP, "SKIP"),
         (OSError("reader unavailable"), "WARN"),
         (None, "SKIP"),
     ],
@@ -123,6 +124,7 @@ def test_live_result_arrives_while_another_check_is_pending(
         (Severity.OUTD, "OLD", "cyan"),
         (Severity.WARN, "WARN", "yellow"),
         (Severity.FAIL, "FAIL", "bold red"),
+        (Severity.SKIP, "SKIP", "dim"),
     ],
 )
 def test_live_status_uses_the_report_palette(severity, label, style):

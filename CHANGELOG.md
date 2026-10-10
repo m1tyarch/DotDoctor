@@ -10,7 +10,7 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 - Arch `dotdoctor-git` packaging recipe with wheel installation, mocked build
   checks, optional system integrations, and submission instructions.
-- Live audit results in fixed rows: completed checks show PASS/WARN/FAIL/OLD and
+- Live audit results in fixed rows: completed checks show PASS/WARN/FAIL/OLD/SKIP and
   a short finding immediately, while other checks continue in parallel.
 - Weekly maintenance checks for signing keys and Arch news, verified backup freshness,
   expected systemd jobs and TRIM, storage health and Btrfs scrub, known vulnerabilities,
@@ -22,6 +22,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Omit unconfigured backup monitoring and remove the NTP requirement from keyring
+  checks. Use neutral SKIP for active timers without completion history and
+  advisories without fixed-version data; retain details in verbose/JSON reports
+  and keep confirmed failures actionable.
 - Distinguish security advisories without fixed-version data from installed
   packages below published fixes; show post-update finding details and review
   commands instead of recommending repeated upgrades.

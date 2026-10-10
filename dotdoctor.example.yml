@@ -14,7 +14,7 @@
 #   sys.pacnew          - .pacnew configuration files
 #   sys.services        - Failed systemd units
 #   sys.journal         - Systemd journal size
-#   sys.keyring         - Signing keyring files and synchronized clock
+#   sys.keyring         - Installed signing keyring package files
 #   sys.news            - Unread Arch upgrade notices
 #   sys.backup          - Configured backup job and verified copy freshness
 #   sys.timers          - Expected timers and their last successful jobs
@@ -41,7 +41,7 @@ maintenance:
   #     scope: user
   #     max_age_days: 7
 
-  # An absent backup is reported as WARN, without blocking upgrades.
+  # Backup monitoring is opt-in; null omits sys.backup without a warning.
   backup: null
   # Connect an EXISTING backup job; DotDoctor does not create backup repositories.
   # backup:

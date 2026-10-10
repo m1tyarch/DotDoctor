@@ -44,7 +44,7 @@ class InteractiveAutoFixer:
         )
         for index in action_order:
             result = results[index]
-            if result.severity in {Severity.PASS, Severity.OUTD}:
+            if result.severity in {Severity.PASS, Severity.OUTD, Severity.SKIP}:
                 continue
 
             had_issues = True
@@ -131,6 +131,13 @@ class InteractiveAutoFixer:
                 else:
                     verified = self._verify(result, context)
                 results[index] = verified
+                if verified.severity == Severity.SKIP:
+                    changed_any = True
+                    for line in format_status_line(
+                        "DONE", result.check_id, "(action completed; execution history unverified)"
+                    ):
+                        self._console.print(line)
+                    continue
                 if verified.severity != Severity.PASS:
                     for line in format_status_line(
                         "WARN", result.check_id, "(action completed; findings remain)"
@@ -158,7 +165,7 @@ class InteractiveAutoFixer:
                     "[dim]No issues found. To update packages, run dotdoctor --sysup.[/dim]"
                 )
             else:
-                self._console.print("[dim]Nothing to fix. All checks are PASS.[/dim]")
+                self._console.print("[dim]Nothing to fix.[/dim]")
         elif changed_any:
             self._console.print("[dim]Auto-fix phase completed.[/dim]")
         return ScanReport(profile=report.profile, results=results)
