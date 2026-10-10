@@ -38,6 +38,7 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(m, "capture", forbidden)
     monkeypatch.setattr(m, "read_json", forbidden)
     monkeypatch.setattr(m, "properties", forbidden)
+    monkeypatch.setattr(m, "service_completion_timestamp", lambda *args: None)
     monkeypatch.setattr(m, "mounted_filesystems", forbidden)
     monkeypatch.setattr(m.time, "time", lambda: NOW)
     monkeypatch.setattr(m.shutil, "which", lambda name: None)
@@ -163,6 +164,185 @@ def test_timer_success_never_inferred_from_last_trigger(monkeypatch):
 
     monkeypatch.setattr(m, "properties", props)
     assert m.MaintenanceChecks().timers().severity == Severity.WARN
+
+
+@pytest.mark.parametrize("age,expected", [(1, Severity.PASS), (8, Severity.WARN)])
+def test_timer_recovers_unloaded_service_completion_from_journal(monkeypatch, age, expected):
+    def props(unit, scope="system", timer=False):
+        if timer:
+            return {"ActiveState": "active", "Triggers": "clean.service", "LastTriggerUSec": OLD}
+        # systemd resets these fields when an inactive service is unloaded.
+        return {
+            **healthy_service(),
+            "ExecMainExitTimestamp": "",
+            "ConditionResult": "no",
+            "AssertResult": "no",
+            "ConditionTimestamp": "",
+            "AssertTimestamp": "",
+        }
+
+    monkeypatch.setattr(m, "properties", props)
+    monkeypatch.setattr(m, "service_completion_timestamp", lambda *args: NOW - age * 86400)
+    result = m.MaintenanceChecks().timers()
+    assert result.severity == expected
+    if expected == Severity.WARN:
+        assert "last success 8.0 days ago" in result.details["items"][0]
+    assert result.details.get("timers", []) == []
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"ActiveState": "activating"},
+        {"Result": "exit-code", "ExecMainStatus": "1"},
+        {"ConditionResult": "no", "ConditionTimestamp": RECENT},
+        {"AssertResult": "no", "AssertTimestamp": RECENT},
+    ],
+)
+def test_old_journal_success_cannot_hide_current_service_problems(monkeypatch, values):
+    monkeypatch.setattr(
+        m,
+        "properties",
+        lambda unit, scope="system", timer=False: (
+            {"ActiveState": "active", "Triggers": "clean.service"}
+            if timer
+            else {**healthy_service(), "ExecMainExitTimestamp": "", **values}
+        ),
+    )
+
+    def forbidden(*args):
+        raise AssertionError("Do not replace a known current problem with old journal history")
+
+    monkeypatch.setattr(m, "service_completion_timestamp", forbidden)
+    assert m.MaintenanceChecks().timers().severity == Severity.WARN
+
+
+def test_journal_completion_before_latest_timer_trigger_is_unverified(monkeypatch):
+    monkeypatch.setattr(
+        m,
+        "properties",
+        lambda unit, scope="system", timer=False: (
+            {"ActiveState": "active", "Triggers": "clean.service", "LastTriggerUSec": RECENT}
+            if timer
+            else {**healthy_service(), "ExecMainExitTimestamp": ""}
+        ),
+    )
+    monkeypatch.setattr(m, "service_completion_timestamp", lambda *args: NOW - 2 * 86400)
+    result = m.MaintenanceChecks().timers()
+    assert result.severity == Severity.WARN
+    assert "latest trigger has no verified completion" in result.details["items"][0]
+
+
+def test_unreadable_completion_history_is_a_warning(monkeypatch):
+    monkeypatch.setattr(
+        m,
+        "properties",
+        lambda unit, scope="system", timer=False: (
+            {"ActiveState": "active", "Triggers": "clean.service"}
+            if timer
+            else {**healthy_service(), "ExecMainExitTimestamp": ""}
+        ),
+    )
+
+    def unavailable(*args):
+        raise ValueError("service completion journal is unavailable")
+
+    monkeypatch.setattr(m, "service_completion_timestamp", unavailable)
+    result = m.MaintenanceChecks().timers()
+    assert result.severity == Severity.WARN
+    assert "service completion journal is unavailable" in result.details["items"][0]
+
+
+@pytest.mark.parametrize(
+    "age,expected", [(14, Severity.PASS), (15, Severity.PASS), (15.01, Severity.WARN)]
+)
+def test_keyring_timer_allows_weekly_schedule_and_random_delay(monkeypatch, age, expected):
+    monkeypatch.setattr(m.shutil, "which", lambda name: "/bin/pacman" if name == "pacman" else None)
+
+    def props(unit, scope="system", timer=False):
+        if timer:
+            return {"ActiveState": "active", "Triggers": unit.replace(".timer", ".service")}
+        return {
+            **healthy_service(),
+            "ExecMainExitTimestamp": (
+                datetime.fromtimestamp(NOW - age * 86400, UTC).isoformat()
+                if unit == "archlinux-keyring-wkd-sync.service"
+                else RECENT
+            ),
+        }
+
+    monkeypatch.setattr(m, "properties", props)
+    assert m.MaintenanceChecks().timers().severity == expected
+
+
+@pytest.mark.parametrize("scope", ["system", "user"])
+def test_completion_reader_matches_service_scope_and_manager(monkeypatch, scope):
+    field = "USER_UNIT" if scope == "user" else "UNIT"
+    owner_field, owner_value = (
+        ("_UID", str(readers.os.getuid())) if scope == "user" else ("_PID", "1")
+    )
+    record = {
+        field: "clean.service",
+        owner_field: owner_value,
+        "SYSLOG_IDENTIFIER": "systemd",
+        "MESSAGE_ID": readers.UNIT_SUCCESS,
+        "__REALTIME_TIMESTAMP": str(int(NOW * 1_000_000)),
+    }
+
+    def capture(command, timeout=15):
+        assert command[:4] == ["journalctl", "--no-pager", "--output=json", "--lines=1"]
+        assert f"{field}=clean.service" in command
+        assert f"{owner_field}={owner_value}" in command
+        assert "SYSLOG_IDENTIFIER=systemd" in command
+        assert {arg.split("=", 1)[1] for arg in command if arg.startswith("MESSAGE_ID=")} == set(
+            readers.UNIT_OUTCOMES
+        )
+        assert "sudo" not in command
+        return response(json.dumps(record))
+
+    monkeypatch.setattr(readers, "capture", capture)
+    assert readers.service_completion_timestamp("clean.service", scope) == NOW
+
+
+@pytest.mark.parametrize(
+    "message_id", [value for value in readers.UNIT_OUTCOMES if value != readers.UNIT_SUCCESS]
+)
+def test_newer_failed_skipped_or_started_job_does_not_count_as_completion(monkeypatch, message_id):
+    monkeypatch.setattr(
+        readers,
+        "capture",
+        lambda *args: response(json.dumps({"UNIT": "clean.service", "MESSAGE_ID": message_id})),
+    )
+    assert readers.service_completion_timestamp("clean.service") is None
+
+
+@pytest.mark.parametrize(
+    "output,code", [("", 0), ("Permission denied", 1), ("not json", 0), ("[]", 0)]
+)
+def test_missing_or_invalid_completion_journal_never_verifies_success(monkeypatch, output, code):
+    monkeypatch.setattr(readers, "capture", lambda *args: response(output, code))
+    if not output:
+        assert readers.service_completion_timestamp("clean.service") is None
+    else:
+        with pytest.raises(ValueError):
+            readers.service_completion_timestamp("clean.service")
+
+
+@pytest.mark.parametrize(
+    "values", [{"_PID": "123"}, {"SYSLOG_IDENTIFIER": "other"}, {"__REALTIME_TIMESTAMP": "invalid"}]
+)
+def test_completion_journal_requires_manager_source_and_timestamp(monkeypatch, values):
+    record = {
+        "UNIT": "clean.service",
+        "_PID": "1",
+        "SYSLOG_IDENTIFIER": "systemd",
+        "MESSAGE_ID": readers.UNIT_SUCCESS,
+        "__REALTIME_TIMESTAMP": str(int(NOW * 1_000_000)),
+        **values,
+    }
+    monkeypatch.setattr(readers, "capture", lambda *args: response(json.dumps(record)))
+    with pytest.raises(ValueError):
+        readers.service_completion_timestamp("clean.service")
 
 
 @pytest.mark.parametrize(

@@ -15,6 +15,17 @@ from dotdoctor.infrastructure.audit_processes import current_session
 
 NEWS_URL = "https://archlinux.org/feeds/news/"
 
+# Stable systemd MESSAGE_IDs: completion, failure, skipped job and new start.
+# Query all outcomes so an older success cannot hide a later unsuccessful run.
+UNIT_SUCCESS = "7ad2d189f7e94e70a38c781354912448"
+UNIT_OUTCOMES = (
+    UNIT_SUCCESS,
+    "d9b373ed55a64feb8242e02dbe79a49c",  # UNIT_FAILURE_RESULT
+    "be02cf6855d2428ba40df7e9d022f03d",  # UNIT_FAILED
+    "0e4284a0caca4bfc81c0bb6786972673",  # UNIT_SKIPPED
+    "7d4958e842da4a758f6c1cdc7b36dcc5",  # UNIT_STARTING
+)
+
 
 def capture(command: list[str], timeout: int = 15) -> subprocess.CompletedProcess[str]:
     return capture_command(command, timeout, env={**os.environ, "LC_ALL": "C"})
@@ -36,6 +47,8 @@ def properties(unit: str, scope: str = "system", timer: bool = False) -> dict[st
         "ExecMainExitTimestamp",
         "ConditionResult",
         "AssertResult",
+        "ConditionTimestamp",
+        "AssertTimestamp",
     ]
     if timer:
         names += ["LastTriggerUSec", "NextElapseUSecRealtime", "Triggers", "UnitFileState"]
@@ -47,6 +60,46 @@ def properties(unit: str, scope: str = "system", timer: bool = False) -> dict[st
     if values.get("LoadState") != "loaded":
         raise ValueError(f"{unit} is not loaded")
     return values
+
+
+def service_completion_timestamp(unit: str, scope: str = "system") -> float | None:
+    """Recover a completed execution after systemd unloads an inactive service.
+
+    Only a manager's successful deactivation counts, never a start/trigger event.
+    No sudo is requested; missing or unreadable history stays unverified.
+    """
+    field = "USER_UNIT" if scope == "user" else "UNIT"
+    owner = f"_UID={os.getuid()}" if scope == "user" else "_PID=1"
+    result = capture(
+        [
+            "journalctl",
+            "--no-pager",
+            "--output=json",
+            "--lines=1",
+            f"{field}={unit}",
+            owner,
+            "SYSLOG_IDENTIFIER=systemd",
+            *[f"MESSAGE_ID={value}" for value in UNIT_OUTCOMES],
+        ]
+    )
+    if result.returncode:
+        raise ValueError("service completion journal is unavailable")
+    if not result.stdout.strip():
+        return None
+    record = json.loads(result.stdout)
+    if not isinstance(record, dict):
+        raise ValueError("invalid service completion journal")
+    if record.get(field) != unit or record.get("MESSAGE_ID") != UNIT_SUCCESS:
+        return None
+    if (
+        record.get("SYSLOG_IDENTIFIER") != "systemd"
+        or record.get(owner.split("=")[0]) != owner.split("=")[1]
+    ):
+        raise ValueError("invalid service completion journal source")
+    value = record.get("__REALTIME_TIMESTAMP", "")
+    if not isinstance(value, str) or not value.isdigit():
+        raise ValueError("invalid service completion journal timestamp")
+    return int(value) / 1_000_000
 
 
 def fetch_news() -> list[dict[str, str]]:

@@ -22,6 +22,7 @@ from dotdoctor.infrastructure.maintenance import (
     fetch_news,
     properties,
     read_json,
+    service_completion_timestamp,
 )
 
 PACKAGE_RE = re.compile(r"^[a-zA-Z0-9@_+][a-zA-Z0-9@_.+\-]*$")
@@ -294,7 +295,8 @@ class MaintenanceChecks:
             shutil.which("pacman")
             and "archlinux-keyring" in self.config.maintenance.keyring_packages
         ):
-            defaults.append(TimerConfig(unit="archlinux-keyring-wkd-sync.timer", max_age_days=8))
+            # Weekly OnCalendar plus up to one week of RandomizedDelaySec.
+            defaults.append(TimerConfig(unit="archlinux-keyring-wkd-sync.timer", max_age_days=15))
         configs = {
             (config.unit, config.scope): config
             for config in [*defaults, *self.config.maintenance.timers]
@@ -320,7 +322,23 @@ class MaintenanceChecks:
                         f"exit={service.get('ExecMainStatus', 'unknown')})"
                     )
                 elif service.get("ExecMainExitTimestamp", "") in {"", "n/a", "0"}:
-                    issues.append(f"{config.unit}: no completed execution recorded")
+                    completed = None
+                    if service.get("ActiveState") == "inactive" and all(
+                        service.get(name, "") in {"", "n/a", "0"}
+                        for name in ("ConditionTimestamp", "AssertTimestamp")
+                    ):
+                        completed = service_completion_timestamp(trigger[0], config.scope)
+                    if completed is None:
+                        issues.append(f"{config.unit}: no completed execution recorded")
+                    elif (
+                        timer.get("LastTriggerUSec", "") not in {"", "n/a", "0"}
+                        and timestamp(timer["LastTriggerUSec"]) > completed
+                    ):
+                        issues.append(f"{config.unit}: latest trigger has no verified completion")
+                    else:
+                        age = _age_days(completed)
+                        if age > config.max_age_days:
+                            issues.append(f"{config.unit}: last success {age:.1f} days ago")
                 elif service.get("AssertResult") == "no":
                     issues.append(f"{config.unit}: service assertion failed; job did not run")
                 elif service.get("ConditionResult") == "no":

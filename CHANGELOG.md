@@ -22,6 +22,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Recover timer service completion from the systemd journal when inactive-service
+  timestamps are discarded, and allow the keyring timer's weekly randomized delay.
 - Show progress during silent TRIM, scrub, timer and backup actions and their
   verification; authenticate sudo outside live displays and reveal command failures.
 - Allow Rich 15, used by current Arch packages, alongside Rich 14.

@@ -143,12 +143,21 @@ name, choose a destination, or invent a successful copy.
 
 Additional expected timers can be configured with `unit`, `scope`, and `max_age_days`.
 The built-in `systemd-tmpfiles-clean.timer` has a seven-day freshness limit;
-`archlinux-keyring-wkd-sync.timer` has an eight-day limit and is expected when
+`archlinux-keyring-wkd-sync.timer` has a fifteen-day limit (weekly schedule plus
+up to one week of randomized delay) and is expected when
 pacman is available and archlinux-keyring is configured. Their triggered services
 are checked too. Other timers are checked only when listed in the configuration.
 Configured timers override built-in entries with the same `(unit, scope)`,
 including their freshness limit, and are checked once. Entries with the same
 unit name in different scopes remain separate checks.
+
+Systemd can unload an inactive service and discard its last execution timestamps.
+When that happens, DotDoctor checks the latest relevant manager event in the
+journal for a successful service completion, using systemd's stable
+[message identifiers](https://github.com/systemd/systemd/blob/main/src/systemd/sd-messages.h).
+A later failure, skipped job, or unfinished start cannot be replaced by an older
+success. Missing or unreadable completion history remains WARN; an enabled timer
+or a recorded trigger alone does not prove that its service succeeded.
 
 TRIM, scrub, timer, and backup fixes show the current action and result-checking
 stage. Interactive terminals animate a dot spinner while a command waits, even
