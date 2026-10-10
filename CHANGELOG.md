@@ -20,6 +20,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Pass Paru's optional rebuild value as `--rebuild=yes` so `yes` cannot become
+  an unintended package target; keep Yay's boolean `--rebuild` syntax.
+- Keep sudo credentials alive during Paru upgrades with `--sudoloop`, as for Yay.
 - Keep reboot authentication visible outside spinners, bound authentication and
   reboot command waits, and report timeouts without automatically retrying.
 - Request reboot after other fixes; keep completion unverified until the next

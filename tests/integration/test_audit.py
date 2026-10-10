@@ -527,6 +527,7 @@ def test_aur_exit_one_with_empty_output_means_no_updates(
     assert result.details["packages"] == []
 
 
+@pytest.mark.parametrize("helper", ["yay", "paru"])
 @pytest.mark.parametrize(
     "returncode,stdout,stderr",
     [
@@ -538,12 +539,12 @@ def test_aur_exit_one_with_empty_output_means_no_updates(
     ],
 )
 def test_aur_nonempty_errors_and_other_exit_codes_remain_unverified(
-    monkeypatch, context, returncode, stdout, stderr
+    monkeypatch, context, helper, returncode, stdout, stderr
 ):
     monkeypatch.setattr(
         s, "_run_capture", lambda *args, **kwargs: completed(stdout, returncode, stderr)
     )
-    result = s.SystemDryRunService()._check_aur_packages(context)
+    result = s.SystemDryRunService()._check_aur_packages(context, helper)
     assert result.severity == Severity.WARN
     assert result.details["verified"] is False
 

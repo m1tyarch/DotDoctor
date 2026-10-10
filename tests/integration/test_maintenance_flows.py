@@ -56,6 +56,38 @@ def upgrade():
     )
 
 
+@pytest.mark.parametrize(
+    "helper,command",
+    [
+        (None, ["sudo", "pacman", "-Syu", "--noconfirm"]),
+        ("paru", ["paru", "-Syu", "--noconfirm", "--sudoloop"]),
+        (
+            "yay",
+            [
+                "yay",
+                "-Syu",
+                "--noconfirm",
+                "--sudoloop",
+                "--answerclean",
+                "None",
+                "--answerdiff",
+                "None",
+            ],
+        ),
+    ],
+)
+@pytest.mark.parametrize("reinstall", [False, True])
+def test_upgrade_uses_manager_specific_flags_and_targets(
+    environment, context, helper, command, reinstall
+):
+    service = upgrade()
+    service._aur_helper_fn = lambda: helper
+    service.reinstall_packages = ["bash"] if reinstall else []
+    assert service.run(context, Console(file=io.StringIO())) == 0
+    transactions = [cmd for cmd in environment if "-Syu" in cmd]
+    assert transactions == [command + (["--", "bash"] if reinstall else [])]
+
+
 @pytest.mark.parametrize("cid", ["sys.smart", "sys.btrfs", "sys.package-db", "sys.backup"])
 def test_blocking_preflight_never_starts_a_transaction(monkeypatch, environment, context, cid):
     monkeypatch.setattr(
@@ -246,7 +278,7 @@ def test_rebuild_is_confirmed_and_rechecked(monkeypatch, environment, context):
         context,
         Console(file=io.StringIO()),
     )
-    assert environment == [["paru", "-S", "--rebuild", "yes", "--", "custom"]]
+    assert environment == [["paru", "-S", "--rebuild=yes", "--", "custom"]]
 
 
 def test_rebuild_command_failure_propagates(monkeypatch, environment, context):
@@ -395,7 +427,8 @@ def test_unknown_rebuild_recheck_is_not_success(monkeypatch, environment, contex
     [
         ["sudo", "pacman", "-Sy", "--needed", "archlinux-keyring"],
         ["sudo", "pacman", "-Su"],
-        ["paru", "-S", "--rebuild", "yes", "--", "custom"],
+        ["paru", "-S", "--rebuild=yes", "--", "custom"],
+        ["yay", "-S", "--rebuild", "--", "custom"],
     ],
 )
 def test_package_review_prompts_inherit_the_terminal(monkeypatch, environment, cmd):
@@ -412,7 +445,7 @@ def test_package_review_prompts_inherit_the_terminal(monkeypatch, environment, c
     assert options == [{"check": False}]
 
 
-@pytest.mark.parametrize("helper,flags", [("paru", ["--rebuild", "yes"]), ("yay", ["--rebuild"])])
+@pytest.mark.parametrize("helper,flags", [("paru", ["--rebuild=yes"]), ("yay", ["--rebuild"])])
 def test_rebuild_uses_helper_specific_flags(monkeypatch, environment, context, helper, flags):
     service = upgrade()
     service._aur_helper_fn = lambda: helper

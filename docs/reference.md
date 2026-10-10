@@ -216,6 +216,24 @@ it prints any warnings and exits without running the upgrade sequence. Package
 transactions currently use noninteractive confirmation flags; read the audit
 findings before starting an upgrade.
 
+DotDoctor selects commands for each package manager:
+
+| Manager | Full upgrade | Confirmed rebuild |
+| --- | --- | --- |
+| pacman | `sudo pacman -Syu --noconfirm` | Not available |
+| paru | `paru -Syu --noconfirm --sudoloop` | `paru -S --rebuild=yes -- <package>` |
+| yay | `yay -Syu --noconfirm --sudoloop --answerclean None --answerdiff None` | `yay -S --rebuild -- <package>` |
+
+AUR helpers run as the current user and invoke sudo for privileged operations.
+Their `--sudoloop` keeps cached sudo credentials alive during long builds.
+Yay's clean/diff answers are not passed to Paru or pacman. Paru's optional
+rebuild value must be joined with `=`; a separate `yes` becomes a package target.
+See the upstream [Paru parser](https://github.com/Morganamilo/paru/blob/master/src/command_line.rs)
+and [Yay manual](https://github.com/Jguer/yay/blob/next/doc/yay.8).
+Confirmed rebuilds inherit the terminal for package review and prompts.
+Noninteractive upgrades can still fail on conflicts; DotDoctor reports the
+failure without forcing conflict resolution or weakening signature checks.
+
 Each scan builds one task plan for both progress and execution. Failed commands,
 timeouts, inaccessible managers, and unsupported output produce a finding rather
 than PASS. A detected failed service remains FAIL even if another manager

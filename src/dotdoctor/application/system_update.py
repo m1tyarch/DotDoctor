@@ -1599,7 +1599,7 @@ class SystemUpgradeService:
         update_title = "System update"
 
         if aur_helper == "paru":
-            update_cmd = ["paru", "-Syu", "--noconfirm"]
+            update_cmd = ["paru", "-Syu", "--noconfirm", "--sudoloop"]
             update_title = "System and AUR update (paru)"
         elif aur_helper == "yay":
             update_cmd = [
@@ -1959,7 +1959,9 @@ class SystemUpgradeService:
             if not PACKAGE_RE.fullmatch(package) or package.endswith("-bin"):
                 continue
             if self._confirm(f"Review and rebuild {package} to check library compatibility?"):
-                rebuild_flags = ["--rebuild", "yes"] if helper == "paru" else ["--rebuild"]
+                # Paru only consumes an optional value when joined with '=';
+                # a separate 'yes' would be interpreted as a package target.
+                rebuild_flags = ["--rebuild=yes"] if helper == "paru" else ["--rebuild"]
                 error, _, _ = self._run_step(
                     [helper, "-S", *rebuild_flags, "--", package], console, f"Rebuild {package}"
                 )

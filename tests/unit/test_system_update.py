@@ -895,7 +895,7 @@ def test_system_upgrade_with_paru_and_maintenance_cleanup(monkeypatch, tmp_path:
     code = service.run(_context(tmp_path), console)
 
     assert code == 0
-    assert ["paru", "-Syu", "--noconfirm"] in commands
+    assert ["paru", "-Syu", "--noconfirm", "--sudoloop"] in commands
     assert ["flatpak", "update", "-y"] in commands
     assert ["flatpak", "uninstall", "--unused", "-y"] in commands
     assert ["sudo", "paccache", "-rk2"] in commands
