@@ -1,0 +1,45 @@
+pkgbase = dotdoctor-git
+	pkgdesc = Minimalist Arch Linux system diagnostics, updates and maintenance
+	pkgver = 0.1.0.r47.gb26779a
+	pkgrel = 1
+	url = https://github.com/m1tyarch/DotDoctor
+	arch = any
+	license = MIT
+	checkdepends = python-pytest
+	makedepends = git
+	makedepends = python-build
+	makedepends = python-installer
+	makedepends = python-hatchling>=1.26
+	depends = python>=3.11
+	depends = python-typer>=0.16.0
+	depends = python-typer<1.0.0
+	depends = python-rich>=14.0.0
+	depends = python-rich<16.0.0
+	depends = python-pydantic>=2.8.0
+	depends = python-pydantic<3.0.0
+	depends = python-yaml>=6.0.0
+	depends = python-yaml<7.0.0
+	depends = pacman
+	depends = pacman-contrib
+	depends = fakeroot
+	depends = sudo
+	depends = systemd
+	depends = util-linux
+	optdepends = paru: AUR update checks and upgrades
+	optdepends = yay: alternative AUR update checks and upgrades
+	optdepends = flatpak: application updates and unused runtime cleanup
+	optdepends = fwupd: firmware update checks and upgrades
+	optdepends = snapper: pre-update snapshots
+	optdepends = timeshift: alternative pre-update snapshots
+	optdepends = reflector: mirror refresh
+	optdepends = cachyos-rate-mirrors: CachyOS mirror refresh
+	optdepends = smartmontools: physical disk health checks
+	optdepends = arch-audit: known package vulnerability checks
+	optdepends = rebuild-detector: foreign package library compatibility checks
+	optdepends = btrfs-progs: Btrfs device and scrub checks
+	provides = dotdoctor=0.1.0.r47.gb26779a
+	conflicts = dotdoctor
+	source = dotdoctor::git+https://github.com/m1tyarch/DotDoctor.git#branch=main
+	sha256sums = SKIP
+
+pkgname = dotdoctor-git

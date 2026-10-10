@@ -1,0 +1,71 @@
+# Maintainer: m1tyarch
+pkgname=dotdoctor-git
+pkgver=0.1.0.r47.gb26779a
+pkgrel=1
+pkgdesc='Minimalist Arch Linux system diagnostics, updates and maintenance'
+arch=('any')
+url='https://github.com/m1tyarch/DotDoctor'
+license=('MIT')
+depends=(
+  'python>=3.11'
+  'python-typer>=0.16.0'
+  'python-typer<1.0.0'
+  'python-rich>=14.0.0'
+  'python-rich<16.0.0'
+  'python-pydantic>=2.8.0'
+  'python-pydantic<3.0.0'
+  'python-yaml>=6.0.0'
+  'python-yaml<7.0.0'
+  'pacman'
+  'pacman-contrib'
+  'fakeroot'
+  'sudo'
+  'systemd'
+  'util-linux'
+)
+makedepends=('git' 'python-build' 'python-installer' 'python-hatchling>=1.26')
+checkdepends=('python-pytest')
+optdepends=(
+  'paru: AUR update checks and upgrades'
+  'yay: alternative AUR update checks and upgrades'
+  'flatpak: application updates and unused runtime cleanup'
+  'fwupd: firmware update checks and upgrades'
+  'snapper: pre-update snapshots'
+  'timeshift: alternative pre-update snapshots'
+  'reflector: mirror refresh'
+  'cachyos-rate-mirrors: CachyOS mirror refresh'
+  'smartmontools: physical disk health checks'
+  'arch-audit: known package vulnerability checks'
+  'rebuild-detector: foreign package library compatibility checks'
+  'btrfs-progs: Btrfs device and scrub checks'
+)
+provides=("dotdoctor=${pkgver}")
+conflicts=('dotdoctor')
+source=('dotdoctor::git+https://github.com/m1tyarch/DotDoctor.git#branch=main')
+sha256sums=('SKIP')
+
+pkgver() {
+  cd dotdoctor
+  local version
+  version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+  printf '%s.r%s.g%s' "$version" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd dotdoctor
+  python -m build --wheel --no-isolation
+}
+
+check() {
+  cd dotdoctor
+  PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}" python -m pytest
+}
+
+package() {
+  cd dotdoctor
+  python -m installer --destdir="$pkgdir" dist/*.whl
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 docs/reference.md "$pkgdir/usr/share/doc/$pkgname/docs/reference.md"
+  install -Dm644 dotdoctor.example.yml "$pkgdir/usr/share/doc/$pkgname/dotdoctor.example.yml"
+}

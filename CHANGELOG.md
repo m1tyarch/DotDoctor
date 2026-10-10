@@ -8,6 +8,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Arch `dotdoctor-git` packaging recipe with wheel installation, mocked build
+  checks, optional system integrations, and submission instructions.
 - Live audit results in fixed rows: completed checks show PASS/WARN/FAIL/OLD and
   a short finding immediately, while other checks continue in parallel.
 - Weekly maintenance checks for signing keys and Arch news, verified backup freshness,
@@ -20,6 +22,7 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Allow Rich 15, used by current Arch packages, alongside Rich 14.
 - Allow seven days between tmpfiles cleanup jobs and let configured timers
   override built-in entries by unit and scope without duplicate checks.
 - Pass Paru's optional rebuild value as `--rebuild=yes` so `yes` cannot become

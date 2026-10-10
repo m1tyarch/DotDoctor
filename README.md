@@ -32,7 +32,12 @@ https://github.com/user-attachments/assets/8c189cbe-6875-4bc1-9f10-de9176c14795
 
 ## Install
 
-Requires Linux and Python **3.11 or newer**. Install from source:
+Requires Linux and Python **3.11 or newer**.
+
+For a native Arch/CachyOS package, see [Arch packaging](packaging/aur/README.md).
+The AUR package is not published yet.
+
+Install from source:
 
 ```bash
 git clone https://github.com/m1tyarch/DotDoctor.git

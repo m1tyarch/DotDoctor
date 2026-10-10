@@ -6,5 +6,6 @@ __pycache__/
 .coverage
 htmlcov/
 artifacts/*.json
+artifacts/aur/
 !artifacts/example-report.json
 *.egg-info/
