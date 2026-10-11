@@ -179,11 +179,16 @@ succeeded. Confirmed failures, inactive expected timers and overdue verified job
 remain WARN. A normal condition-based skip or a job still running does not produce
 a warning. Failure to read the expected unit itself remains a checker error.
 
-TRIM, scrub, timer, and backup fixes show the current action and result-checking
-stage. Interactive terminals animate a dot spinner while a command waits, even
+Orphan removal, cache cleanup, Flatpak runtime removal, journal cleanup, TRIM,
+scrub, timer and backup fixes show the current action. The longer maintenance
+checks also show their result-checking stage.
+Interactive terminals animate a dot spinner while a command waits, even
 when it produces no output. Pipes, dumb terminals, and animation opt-outs show
 static stage messages. Sudo authentication happens outside the spinner; commands
-inside it cannot prompt for input. A successful command is followed by a recheck
+inside it use noninteractive sudo and captured output so package-manager progress
+cannot overwrite the spinner. Command failures are displayed after the spinner
+stops; interactive `pacdiff` runs directly in the terminal.
+A successful command is followed by a recheck
 before the finding can become PASS. In particular, starting the existing TRIM
 service waits for its work to finish and can take a minute or longer.
 

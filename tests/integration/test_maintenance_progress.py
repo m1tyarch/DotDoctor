@@ -255,3 +255,132 @@ def test_interrupted_trim_wait_restores_display_without_claiming_success(monkeyp
         apply(env)
     assert not env.state.active and not env.state.verified
     assert "DONE" not in env.output.getvalue()
+
+
+@pytest.mark.parametrize("cached", [True, False])
+def test_orphan_removal_keeps_authentication_visible_and_captures_pacman_output(
+    monkeypatch, environment, cached
+):
+    env = environment
+    env.result = CheckResult(
+        check_id="sys.orphans",
+        severity=Severity.WARN,
+        message="2 orphan packages",
+        details={"orphans": ["chrpath", "telegram-desktop-bin-debug"]},
+    )
+    monkeypatch.setattr(fixes.shutil, "which", lambda name: f"/bin/{name}")
+
+    def status(*args, **kwargs):
+        raise AssertionError("An outer status spinner would hide sudo and command output")
+
+    monkeypatch.setattr(env.fixer._console, "status", status)
+    frames = []
+
+    def run(command, **kwargs):
+        env.state.calls.append(command)
+        if command in (["sudo", "-n", "-v"], ["sudo", "-v"]):
+            assert not env.state.active
+            if command == ["sudo", "-v"]:
+                assert kwargs == {"check": False, "timeout": 120}
+                env.fixer._console.print("[sudo] password for test:", markup=False)
+            return SimpleNamespace(returncode=0 if cached or command == ["sudo", "-v"] else 1)
+        assert env.state.active
+        assert command == [
+            "sudo",
+            "-n",
+            "pacman",
+            "-Rns",
+            "--noconfirm",
+            "chrpath",
+            "telegram-desktop-bin-debug",
+        ]
+        assert kwargs == {
+            "check": False,
+            "stdin": subprocess.DEVNULL,
+            "capture_output": True,
+            "text": True,
+        }
+        spinner = env.state.grids[-1].columns[1]._cells[0]
+        frames.extend(spinner.render(now).plain for now in (0.0, 0.09, 0.18, 0.27))
+        return SimpleNamespace(returncode=0, stdout="(1/2) removing chrpath\r[###] 100%", stderr="")
+
+    monkeypatch.setattr(fixes.subprocess, "run", run)
+    report = apply(env)
+    assert report.results[0].severity == Severity.PASS
+    assert env.state.verified and not env.state.active
+    assert len(set(frames)) >= 3
+    assert env.state.calls[:1] == [["sudo", "-n", "-v"]]
+    assert "DONE" in env.output.getvalue()
+    assert "(1/2) removing" not in env.output.getvalue()
+    assert ("[sudo] password for test:" in env.output.getvalue()) is (not cached)
+
+
+@pytest.mark.parametrize("failure", ["auth", "expired", "pacman", "interrupted"])
+def test_failed_orphan_removal_does_not_claim_success(monkeypatch, environment, failure):
+    env = environment
+    env.result = CheckResult(
+        check_id="sys.orphans",
+        severity=Severity.WARN,
+        message="orphan package",
+        details={"orphans": ["chrpath"]},
+    )
+    monkeypatch.setattr(fixes.shutil, "which", lambda name: f"/bin/{name}")
+
+    def run(command, **kwargs):
+        env.state.calls.append(command)
+        if command in (["sudo", "-n", "-v"], ["sudo", "-v"]):
+            assert not env.state.active
+            return SimpleNamespace(returncode=int(failure == "auth"))
+        assert env.state.active
+        if failure == "interrupted":
+            raise KeyboardInterrupt
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr=(
+                "sudo: a password is required"
+                if failure == "expired"
+                else "error: failed transaction"
+            ),
+        )
+
+    monkeypatch.setattr(fixes.subprocess, "run", run)
+    if failure == "interrupted":
+        with pytest.raises(KeyboardInterrupt):
+            apply(env)
+    else:
+        assert apply(env).results[0].severity == Severity.WARN
+        if failure == "auth":
+            assert env.state.grids == []
+            assert all(command[0] == "sudo" and command[-1] == "-v" for command in env.state.calls)
+        else:
+            assert (
+                "password is required" if failure == "expired" else "failed transaction"
+            ) in env.output.getvalue()
+    assert not env.state.active and not env.state.verified
+    assert "DONE" not in env.output.getvalue()
+
+
+@pytest.mark.parametrize("check_id", ["sys.cache", "sys.disk", "sys.journal", "sys.flatpak-unused"])
+def test_other_cleanup_commands_capture_output_without_prompting_in_a_spinner(
+    monkeypatch, environment, check_id
+):
+    env = environment
+    env.result = CheckResult(check_id=check_id, severity=Severity.WARN, message="cleanup needed")
+    monkeypatch.setattr(fixes.shutil, "which", lambda name: f"/bin/{name}")
+
+    def run(command, **kwargs):
+        env.state.calls.append(command)
+        if command == ["sudo", "-n", "-v"]:
+            assert not env.state.active
+        else:
+            assert env.state.active
+            assert kwargs["capture_output"] is True
+            assert kwargs["stdin"] == subprocess.DEVNULL
+            assert command[0] != "sudo" or command[:2] == ["sudo", "-n"]
+        return SimpleNamespace(returncode=0, stdout="command progress\r100%", stderr="")
+
+    monkeypatch.setattr(fixes.subprocess, "run", run)
+    assert apply(env).results[0].severity == Severity.PASS
+    assert not env.state.active
+    assert "command progress" not in env.output.getvalue()

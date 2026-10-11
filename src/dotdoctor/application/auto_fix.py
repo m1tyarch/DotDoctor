@@ -83,25 +83,10 @@ class InteractiveAutoFixer:
                 self._console.print("[dim]Skipped by user.[/dim]")
                 continue
 
-            action_label = self._resolve_action_label(result.check_id)
             try:
-                if (
-                    result.check_id
-                    in {
-                        "sys.pacnew",
-                        "sys.reboot",
-                        "sys.trim",
-                        "sys.btrfs",
-                        "sys.timers",
-                        "sys.integrity",
-                        "sys.backup",
-                    }
-                    or not self._console.is_terminal
-                ):
-                    outcome = fix_handler(context, result)
-                else:
-                    with self._console.status(f"[dim]{action_label}[/dim]", spinner="dots"):
-                        outcome = fix_handler(context, result)
+                # Handlers own progress: authentication and interactive tools
+                # must never inherit a terminal being redrawn by a spinner.
+                outcome = fix_handler(context, result)
             except (OSError, subprocess.SubprocessError) as exc:
                 self._console.print(f"[red]Auto-fix failed:[/red] {exc}")
                 continue
@@ -294,29 +279,34 @@ class InteractiveAutoFixer:
             return FixOutcome(changed=False, note="No orphan packages to remove.")
 
         cmd = ["sudo", "pacman", "-Rns", "--noconfirm", *orphans]
-        remove_res = subprocess.run(cmd, check=False)
-        if remove_res.returncode == 0:
+        outcome = self._run_maintenance_commands(
+            [(cmd, self._resolve_action_label(result.check_id))]
+        )
+        if outcome.changed:
             count = len(orphans)
             noun = "package" if count == 1 else "packages"
             return FixOutcome(changed=True, note=f"Removed {count} orphan {noun}.")
-        return FixOutcome(
-            changed=False,
-            note=f"Failed to remove orphan packages (exit={remove_res.returncode}).",
-        )
+        return outcome
 
     def _fix_sys_cache(self, context: ScanContext, result: CheckResult) -> FixOutcome:
         if shutil.which("paccache") is not None:
-            r1 = subprocess.run(["sudo", "paccache", "-rk2"], check=False)
-            r2 = subprocess.run(["sudo", "paccache", "-ruk0"], check=False)
-            if r1.returncode == 0 and r2.returncode == 0:
+            outcome = self._run_maintenance_commands(
+                [
+                    (["sudo", "paccache", "-rk2"], "Cleaning pacman package cache"),
+                    (["sudo", "paccache", "-ruk0"], "Cleaning cache of uninstalled packages"),
+                ]
+            )
+            if outcome.changed:
                 return FixOutcome(changed=True, note="Cleaned pacman package cache.")
-            return FixOutcome(changed=False, note="paccache commands failed.")
+            return outcome
 
         if shutil.which("pacman") is not None:
-            r = subprocess.run(["sudo", "pacman", "-Sc", "--noconfirm"], check=False)
-            if r.returncode == 0:
+            outcome = self._run_maintenance_commands(
+                [(["sudo", "pacman", "-Sc", "--noconfirm"], "Cleaning pacman package cache")]
+            )
+            if outcome.changed:
                 return FixOutcome(changed=True, note="Cleaned pacman package cache.")
-            return FixOutcome(changed=False, note="pacman -Sc failed.")
+            return outcome
 
         return FixOutcome(changed=False, note="No pacman cache tools installed.")
 
@@ -324,10 +314,12 @@ class InteractiveAutoFixer:
         if shutil.which("flatpak") is None:
             return FixOutcome(changed=False, note="flatpak is not installed.")
 
-        res = subprocess.run(["flatpak", "uninstall", "--unused", "-y"], check=False)
-        if res.returncode == 0:
+        outcome = self._run_maintenance_commands(
+            [(["flatpak", "uninstall", "--unused", "-y"], "Removing unused Flatpak runtimes")]
+        )
+        if outcome.changed:
             return FixOutcome(changed=True, note="Removed unused Flatpak runtimes.")
-        return FixOutcome(changed=False, note=f"Flatpak cleanup failed (exit={res.returncode}).")
+        return outcome
 
     def _fix_sys_pacnew(self, context: ScanContext, result: CheckResult) -> FixOutcome:
         if shutil.which("pacdiff") is None:
@@ -345,13 +337,12 @@ class InteractiveAutoFixer:
         if shutil.which("journalctl") is None:
             return FixOutcome(changed=False, note="journalctl is not installed.")
 
-        res = subprocess.run(["sudo", "journalctl", "--vacuum-size=1G"], check=False)
-        if res.returncode == 0:
-            return FixOutcome(changed=True, note="Vacuumed systemd journal logs to 1G.")
-        return FixOutcome(
-            changed=False,
-            note=f"journalctl vacuum failed (exit={res.returncode}).",
+        outcome = self._run_maintenance_commands(
+            [(["sudo", "journalctl", "--vacuum-size=1G"], "Vacuuming systemd journal logs to 1G")]
         )
+        if outcome.changed:
+            return FixOutcome(changed=True, note="Vacuumed systemd journal logs to 1G.")
+        return outcome
 
     def _fix_sys_reboot(self, context: ScanContext, result: CheckResult) -> FixOutcome:
         self._console.print("  [dim]Caching sudo credentials[/dim]")
@@ -475,9 +466,18 @@ class InteractiveAutoFixer:
                 return FixOutcome(
                     True, "Selected packages reinstalled during a full system upgrade."
                 )
+        return self._run_maintenance_commands(
+            [
+                (command, self._maintenance_command_label(command, result.check_id))
+                for command in commands
+            ]
+        )
+
+    def _run_maintenance_commands(self, commands: list[tuple[list[str], str]]) -> FixOutcome:
+        """Authenticate with the terminal idle, then run captured, noninteractive steps."""
         if not commands:
             return FixOutcome(False, "No safe automated action is available.")
-        if any(command[0] == "sudo" for command in commands):
+        if any(command[0] == "sudo" for command, _ in commands):
             try:
                 cached = subprocess.run(
                     ["sudo", "-n", "-v"],
@@ -496,8 +496,7 @@ class InteractiveAutoFixer:
             except subprocess.TimeoutExpired:
                 return FixOutcome(False, "Sudo authentication timed out; maintenance not started.")
 
-        for command in commands:
-            label = self._maintenance_command_label(command, result.check_id)
+        for command, label in commands:
             if command[0] == "sudo":
                 command = ["sudo", "-n", *command[1:]]
             if "systemctl" in command:
@@ -560,12 +559,21 @@ class InteractiveAutoFixer:
     def _fix_sys_disk(self, context: ScanContext, result: CheckResult) -> FixOutcome:
         notes: list[str] = []
         if shutil.which("paccache") is not None:
-            r1 = subprocess.run(["sudo", "paccache", "-rk2"], check=False)
-            if r1.returncode == 0:
+            outcome = self._run_maintenance_commands(
+                [(["sudo", "paccache", "-rk2"], "Cleaning pacman package cache")]
+            )
+            if outcome.changed:
                 notes.append("cleaned pacman cache")
         if shutil.which("journalctl") is not None:
-            r2 = subprocess.run(["sudo", "journalctl", "--vacuum-size=1G"], check=False)
-            if r2.returncode == 0:
+            outcome = self._run_maintenance_commands(
+                [
+                    (
+                        ["sudo", "journalctl", "--vacuum-size=1G"],
+                        "Vacuuming systemd journal logs to 1G",
+                    )
+                ]
+            )
+            if outcome.changed:
                 notes.append("vacuumed journal logs")
         if notes:
             return FixOutcome(changed=True, note=" and ".join(notes) + ".")

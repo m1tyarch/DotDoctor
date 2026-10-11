@@ -22,6 +22,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Authenticate before showing orphan-removal and cleanup progress. Capture command
+  output and use noninteractive sudo so password prompts and pacman progress bars
+  cannot be overwritten by the spinner; apply the same runner to other cleanups.
 - Omit unconfigured backup monitoring and remove the NTP requirement from keyring
   checks. Use neutral SKIP for active timers without completion history and
   advisories without fixed-version data; retain details in verbose/JSON reports

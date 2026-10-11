@@ -49,7 +49,10 @@ def test_fix_sys_orphans_removes_packages(monkeypatch, tmp_path: Path) -> None:
 
     assert outcome.changed is True
     assert "Removed 2 orphan packages" in outcome.note
-    assert commands == [["sudo", "pacman", "-Rns", "--noconfirm", "libfoo", "libbar"]]
+    assert commands == [
+        ["sudo", "-n", "-v"],
+        ["sudo", "-n", "pacman", "-Rns", "--noconfirm", "libfoo", "libbar"],
+    ]
 
 
 def test_fix_sys_orphans_queries_when_details_empty(monkeypatch, tmp_path: Path) -> None:
@@ -79,7 +82,7 @@ def test_fix_sys_orphans_queries_when_details_empty(monkeypatch, tmp_path: Path)
 
     assert outcome.changed is True
     assert "Removed 2 orphan packages" in outcome.note
-    assert ["sudo", "pacman", "-Rns", "--noconfirm", "orphan1", "orphan2"] in commands
+    assert ["sudo", "-n", "pacman", "-Rns", "--noconfirm", "orphan1", "orphan2"] in commands
 
 
 def test_fix_sys_cache_runs_paccache(monkeypatch, tmp_path: Path) -> None:
@@ -106,7 +109,11 @@ def test_fix_sys_cache_runs_paccache(monkeypatch, tmp_path: Path) -> None:
 
     assert outcome.changed is True
     assert outcome.note == "Cleaned pacman package cache."
-    assert commands == [["sudo", "paccache", "-rk2"], ["sudo", "paccache", "-ruk0"]]
+    assert commands == [
+        ["sudo", "-n", "-v"],
+        ["sudo", "-n", "paccache", "-rk2"],
+        ["sudo", "-n", "paccache", "-ruk0"],
+    ]
 
 
 def test_fix_sys_flatpak_unused(monkeypatch, tmp_path: Path) -> None:
@@ -187,7 +194,10 @@ def test_fix_sys_journal(monkeypatch, tmp_path: Path) -> None:
 
     assert outcome.changed is True
     assert outcome.note == "Vacuumed systemd journal logs to 1G."
-    assert commands == [["sudo", "journalctl", "--vacuum-size=1G"]]
+    assert commands == [
+        ["sudo", "-n", "-v"],
+        ["sudo", "-n", "journalctl", "--vacuum-size=1G"],
+    ]
 
 
 @pytest.mark.parametrize("request_code", [0, 1])
@@ -522,7 +532,7 @@ def test_resolve_action_label() -> None:
     assert "unknown" in fixer._resolve_action_label("unknown")
 
 
-def test_apply_uses_status_spinner_when_terminal(monkeypatch, tmp_path: Path) -> None:
+def test_apply_leaves_terminal_control_to_the_fix_handler(monkeypatch, tmp_path: Path) -> None:
     context = _context(tmp_path)
     console = Console()
     monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
@@ -571,8 +581,7 @@ def test_apply_uses_status_spinner_when_terminal(monkeypatch, tmp_path: Path) ->
     )
 
     new_report = fixer.apply(report, context)
-    assert len(status_called) == 1
-    assert "Removing orphan packages" in status_called[0]
+    assert not status_called, "An outer spinner would hide handler authentication or prompts"
     res = new_report.get_result("sys.orphans")
     assert res is not None
     assert res.severity is Severity.PASS
