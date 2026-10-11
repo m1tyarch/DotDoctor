@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -18,12 +19,14 @@ def verify(artifact: Path, expected: str) -> None:
         python = environment / "bin/python"
         entrypoint = environment / "bin/dotdoctor"
         env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+        env.update({"TERM": "dumb", "NO_COLOR": "1", "COLUMNS": "120"})
 
         def run(*args: str) -> str:
             completed = subprocess.run(
                 args, cwd=root, env=env, check=True, capture_output=True, text=True
             )
-            return completed.stdout.strip()
+            # CI may force ANSI styles even when stdout is captured.
+            return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", completed.stdout).strip()
 
         run(str(python), "-m", "pip", "install", "--disable-pip-version-check", str(artifact))
         run(str(python), "-m", "pip", "check")
@@ -43,7 +46,7 @@ for module in pkgutil.walk_packages(dotdoctor.__path__, prefix='dotdoctor.'):
         assert run(str(entrypoint), "version") == f"dotdoctor {expected}"
         help_text = run(str(entrypoint), "--help")
         for option in ("--sysup", "--fix", "--json-output", "--config"):
-            assert option in help_text, f"Missing documented option: {option}"
+            assert option in help_text, f"Missing documented option: {option}\n{help_text}"
         for removed in ("--env", "--sys ", "--profile", "--no-ui"):
             assert removed not in help_text, f"Removed option still advertised: {removed}"
         print(f"PASS {artifact.name}: clean install, dependencies, imports, help, version")
