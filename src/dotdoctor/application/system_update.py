@@ -518,9 +518,10 @@ class SystemDryRunService:
                 def offline_result(check_id: str = cid) -> CheckResult:
                     return CheckResult(
                         check_id=check_id,
-                        severity=Severity.WARN,
-                        message="not verified: internet connection unavailable",
-                        details={"verified": False},
+                        severity=Severity.FAIL,
+                        message="check blocked: no active internet connection",
+                        remediation="connect to the internet and retry",
+                        details={"verified": False, "blocked_by": "sys.network"},
                     )
 
                 runner = offline_result

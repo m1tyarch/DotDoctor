@@ -905,17 +905,32 @@ def test_parallel_scan_routes_registered_checks_and_respects_disables(monkeypatc
     assert report.exit_code == 2
 
 
-def test_offline_scan_never_fetches_news_or_security(monkeypatch, tmp_path):
+@pytest.mark.parametrize("disabled_checks", [[], ["sys.network"]])
+def test_offline_scan_never_fetches_news_or_security(monkeypatch, tmp_path, disabled_checks):
     from dotdoctor.application.system_update import SystemDryRunService
 
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Offline checks must not fetch remote data")
+
     monkeypatch.setattr(m.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(m, "fetch_news", forbidden)
+    monkeypatch.setattr(m.MaintenanceChecks, "security", forbidden)
     ctx = ScanContext("system", tmp_path, tmp_path, "/bin", "/bin/bash")
     report = SystemDryRunService(is_online_fn=lambda: False).run(
-        ctx, include_checks=frozenset({"sys.news", "sys.security"})
+        ctx,
+        include_checks=frozenset({"sys.news", "sys.security"}),
+        disabled_checks=disabled_checks,
     )
     offline = [item for item in report.results if item.check_id in {"sys.news", "sys.security"}]
     assert len(offline) == 2
-    assert all(item.severity == Severity.WARN for item in offline)
+    assert all(item.severity == Severity.FAIL for item in report.results)
+    assert all(item.message == "check blocked: no active internet connection" for item in offline)
+    assert all(item.remediation == "connect to the internet and retry" for item in offline)
+    assert all(item.details == {"verified": False, "blocked_by": "sys.network"} for item in offline)
+    assert report.exit_code == 2
+    assert ("sys.network" in {item.check_id for item in report.results}) == (
+        "sys.network" not in disabled_checks
+    )
 
 
 def test_missing_mount_information_cannot_report_healthy_capacity(monkeypatch):

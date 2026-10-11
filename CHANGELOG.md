@@ -6,6 +6,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ## [Unreleased]
 
+### Fixed
+
+- Use FAIL consistently for news and security checks blocked by unavailable
+  internet, matching the network check and preserving the cause in JSON.
+
 ## [0.2.0-beta.1] - 2026-10-11
 
 First GitHub pre-release of the system-maintenance CLI. Python packages and

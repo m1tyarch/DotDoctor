@@ -126,6 +126,13 @@ Use `arch-audit -c` to inspect CVEs and compare with upstream advisories.
 After upgrades, actionable findings show check IDs, package details, and review commands;
 remaining check findings are displayed separately from completed action counts.
 
+When the connectivity check detects no internet connection, `sys.network` reports
+FAIL. Registered `sys.news` and `sys.security` checks also report FAIL with the
+same network cause, without fetching remote data. Their JSON results include
+`verified: false` and `blocked_by: sys.network`; they establish no news or security
+findings. Other network-dependent update checks are omitted until connectivity
+is restored. Local checks continue to run.
+
 Reboot detection (`sys.reboot`) compares the running kernel version with installed
 module directories without sudo. Kernel journal scanning has been removed from
 audits and upgrade preflight checks.
