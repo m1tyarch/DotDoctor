@@ -333,8 +333,10 @@ Run tests:
 
 The [contributing guide](../CONTRIBUTING.md) lists all local checks and safe testing
 rules. GitHub Actions currently runs Ruff, Black, mypy, and tests on Python 3.11,
-with a coverage threshold of 75%. Its installation uses editable source; wheel
-and sdist installation checks are release tasks, not existing CI steps.
+with a coverage threshold of 75%. It also builds wheel and sdist artifacts and
+installs each in a fresh environment to verify dependencies, imports, help and
+version. Run `python scripts/verify_distributions.py dist/*.whl dist/*.tar.gz`
+after `python -m build` to repeat the artifact checks locally.
 
 ### Source layout
 

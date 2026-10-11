@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e '.[dev]'
+          pip install -e '.[dev]' build
 
       - name: Lint (ruff)
         run: ruff check .
@@ -32,3 +32,9 @@ jobs:
 
       - name: Tests with coverage
         run: pytest --cov=src/dotdoctor --cov-report=term-missing --cov-fail-under=75
+
+      - name: Build wheel and sdist
+        run: python -m build
+
+      - name: Verify clean artifact installs
+        run: python scripts/verify_distributions.py dist/*.whl dist/*.tar.gz

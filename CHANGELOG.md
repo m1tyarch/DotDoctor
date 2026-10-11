@@ -6,8 +6,25 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ## [Unreleased]
 
+## [0.2.0-beta.1] - 2026-10-11
+
+First GitHub pre-release of the system-maintenance CLI. Python packages and
+`dotdoctor version` use the normalized version `0.2.0b1`.
+
+### Migration from the 0.1.0 development MVP
+
+- The `scan` command, `--env`, `--sys`, `--profile`, and development-environment
+  profiles are removed. Use `dotdoctor`, `dotdoctor --sysup`, or `dotdoctor --fix`.
+- Audit/fix exit code 0 includes WARN, OUTD and neutral SKIP; FAIL returns 2.
+  Automation should inspect JSON results for findings and coverage.
+- JSON uses `OUTD` for terminal `OLD` and adds `SKIP` for neutral, unverified results.
+- Backup monitoring is opt-in through `maintenance.backup`; old configurations
+  containing only `disabled_checks` continue to work.
+
 ### Added
 
+- Versioned pre-release artifacts with checksums and clean wheel/sdist installation
+  checks in CI. The version command reads the package's version constant.
 - Arch `dotdoctor-git` packaging recipe with wheel installation, mocked build
   checks, optional system integrations, and submission instructions.
 - Live audit results in fixed rows: completed checks show PASS/WARN/FAIL/OLD/SKIP and
@@ -76,8 +93,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 This entry records the original development-environment MVP. Later source changes
 replaced those profiles and the `scan` command with the three system-maintenance
-modes. The package version remains 0.1.0; this historical entry does not describe
-the current CLI. See [README.md](README.md) and Unreleased above for current behavior.
+modes. This historical entry does not describe the current CLI.
+See [README.md](README.md) and the 0.2.0-beta.1 entry above for current behavior.
 
 ### Added
 

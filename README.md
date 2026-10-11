@@ -34,13 +34,16 @@ https://github.com/user-attachments/assets/8c189cbe-6875-4bc1-9f10-de9176c14795
 
 Requires Linux and Python **3.11 or newer**.
 
+The first pre-release is [v0.2.0-beta.1](https://github.com/m1tyarch/DotDoctor/releases/tag/v0.2.0-beta.1).
+Python packages and `dotdoctor version` identify it as `0.2.0b1`.
+
 For a native Arch/CachyOS package, see [Arch packaging](packaging/aur/README.md).
 The AUR package is not published yet.
 
-Install from source:
+Install the tagged release from source:
 
 ```bash
-git clone https://github.com/m1tyarch/DotDoctor.git
+git clone --branch v0.2.0-beta.1 --depth 1 https://github.com/m1tyarch/DotDoctor.git
 cd DotDoctor
 python -m venv .venv
 source .venv/bin/activate
@@ -49,7 +52,8 @@ dotdoctor
 ```
 
 For later runs, activate the same environment or use `.venv/bin/dotdoctor` from
-the checkout.
+the checkout. To work on the development version, clone the `main` branch instead;
+see [Contributing](CONTRIBUTING.md).
 
 ## Use
 

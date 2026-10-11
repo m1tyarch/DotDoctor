@@ -500,6 +500,8 @@ def test_main_keyboard_interrupt_clean_exit(monkeypatch) -> None:
 
 
 def test_version_command() -> None:
+    from dotdoctor import __version__
+
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert "dotdoctor" in result.stdout
+    assert result.stdout.strip() == f"dotdoctor {__version__}"

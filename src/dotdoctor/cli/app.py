@@ -11,6 +11,7 @@ from rich.table import Table
 from rich.text import Text
 from typer._click import exceptions as _click_exceptions
 
+from dotdoctor import __version__
 from dotdoctor.application.auto_fix import InteractiveAutoFixer
 from dotdoctor.application.system_update import (
     FIX_CHECK_IDS,
@@ -140,7 +141,7 @@ def root(
 def version() -> None:
     """Print DotDoctor version."""
     console = Console()
-    console.print("dotdoctor 0.1.0")
+    console.print(f"dotdoctor {__version__}")
 
 
 def _safe_confirm(prompt: str, default: bool = True) -> bool:

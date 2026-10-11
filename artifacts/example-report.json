@@ -23,11 +23,13 @@
       }
     },
     {
-      "check_id": "sys.backup",
-      "severity": "WARN",
-      "message": "backup is not configured; recovery is not verified",
-      "remediation": "configure maintenance.backup in dotdoctor.yml",
+      "check_id": "sys.timers",
+      "severity": "SKIP",
+      "message": "expected timers active; job completion not verified",
+      "remediation": null,
       "details": {
+        "items": ["archlinux-keyring-wkd-sync.timer: completion history unavailable"],
+        "timers": [],
         "verified": false
       }
     }

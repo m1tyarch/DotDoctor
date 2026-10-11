@@ -3,6 +3,8 @@
 This is a checklist for the current system-maintenance CLI, not evidence that a
 release has already been validated. Keep items unchecked until results are recorded.
 See [README.md](README.md) for behavior and [CONTRIBUTING.md](CONTRIBUTING.md) for safe testing.
+Release-specific results and coverage limits belong in the release notes;
+this reusable checklist is not a record of checks performed on a particular tag.
 
 ## Versioning
 
@@ -26,16 +28,16 @@ See [README.md](README.md) for behavior and [CONTRIBUTING.md](CONTRIBUTING.md) f
 - [ ] Live results show actual statuses before slower checks finish, with stable row order and no artificial delays.
 - [ ] Ctrl+C cancels audit process groups, restores the cursor, and returns 130.
 - [ ] Static output works for pipes, dumb terminals, and animation/color opt-outs.
-- [ ] JSON export works in default/fix modes; OUTD is preserved in JSON. Sysup currently has no JSON export.
+- [ ] JSON export works in default/fix modes; OUTD and neutral SKIP are preserved in JSON. Sysup currently has no JSON export.
 - [ ] YAML/env/CLI configuration precedence and disabled checks match the README.
 - [ ] WARN/OUTD without FAIL return 0; FAIL returns 2 in scan/fix mode. Validate handled config errors (3), upgrade failure paths (1/2/3), and invalid CLI arguments (2).
 - [ ] Snapshot failure and blocking preflight findings stop updates; absent snapshot tooling is reported as SKIP.
 - [ ] Ordinary no-update command outcomes do not produce false WARN/FAIL, including firmware actions during sysup.
-- [ ] Backup absence is WARN, optional checks are not presented as verified when omitted, and failed services are preserved for diagnosis.
+- [ ] Unconfigured backup monitoring is omitted; active timers without history use neutral SKIP. Omitted or unverified checks do not count as PASS, and confirmed failed services remain findings.
 
 ## Packaging and real-environment validation
 
-- [ ] Build wheel and sdist and install each in a clean environment; verify entrypoint, imports, help, and version. These are not current CI steps.
+- [ ] Build wheel and sdist and install each in a clean environment; verify entrypoint, dependencies, imports, help, and version. CI runs these checks on Python 3.11; repeat locally on the target Python.
 - [ ] Validate real workflows only in an explicitly authorized disposable Arch/CachyOS VM or dedicated test system.
 - [ ] Record configurations actually tested: filesystem, package/AUR helper, snapshots, Flatpak, and firmware tooling.
 - [ ] Exercise no-update/update paths, missing tools, denied sudo, failed mirrors/snapshots, and cancellation. Mock hardware-specific actions when no test hardware is available.
@@ -56,3 +58,14 @@ See [README.md](README.md) for behavior and [CONTRIBUTING.md](CONTRIBUTING.md) f
 - [ ] Tag created (`vX.Y.Z`).
 - [ ] Release notes include migration notes (if needed).
 - [ ] Publish release notes/artifacts only after release checks are complete.
+
+For a beta, document integrations not exercised on real hardware rather than
+claiming stable coverage. Run packaging checks with:
+
+```bash
+python -m build
+python scripts/verify_distributions.py dist/*.whl dist/*.tar.gz
+```
+
+The verifier creates a separate temporary venv per artifact, downloads its
+dependencies, and runs only imports, `--help`, and `version`.

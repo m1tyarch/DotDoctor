@@ -26,6 +26,8 @@ Use focused tests while developing, then run the required checks before submitti
 
 CI currently runs these checks on Python 3.11 and additionally requires at least
 75% coverage through `pytest --cov=src/dotdoctor --cov-fail-under=75`.
+It also builds wheel/sdist artifacts and checks their installation, dependencies,
+imports, help and version in separate clean environments.
 Add tests for changed behavior and regressions; documentation-only changes do
 not need new tests. Existing tests use mocks for system commands and harmless
 helper processes for cancellation.
