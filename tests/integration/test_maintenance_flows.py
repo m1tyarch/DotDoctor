@@ -1,6 +1,5 @@
 import io
 import json
-from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -35,7 +34,9 @@ def environment(monkeypatch, tmp_path):
         return SimpleNamespace(returncode=0, stdout="there is nothing to do", stderr="")
 
     monkeypatch.setattr(s.subprocess, "run", run)
-    monkeypatch.setattr(s.socket, "create_connection", lambda *a, **kw: nullcontext())
+    monkeypatch.setattr(
+        s, "capture_command", lambda *a, **kw: SimpleNamespace(returncode=0, stdout="true")
+    )
     monkeypatch.setattr(s.shutil, "which", lambda name: "/bin/pacman" if name == "pacman" else None)
     monkeypatch.setattr(
         s,

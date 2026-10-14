@@ -635,22 +635,18 @@ def test_system_upgrade_aborts_on_critical_disk_space(monkeypatch, tmp_path: Pat
 
 
 def test_is_online_success(monkeypatch) -> None:
-    class DummySocket:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-    monkeypatch.setattr("socket.create_connection", lambda *args, **kwargs: DummySocket())
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.capture_command",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="true"),
+    )
     assert is_online() is True
 
 
 def test_is_online_failure(monkeypatch) -> None:
-    def fake_connect(*args, **kwargs):
-        raise OSError("Network unreachable")
+    def fake_capture(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
 
-    monkeypatch.setattr("socket.create_connection", fake_connect)
+    monkeypatch.setattr("dotdoctor.application.system_update.capture_command", fake_capture)
     assert is_online() is False
 
 
@@ -686,7 +682,7 @@ def test_system_dry_run_offline_skips_network_checks(monkeypatch, tmp_path: Path
 
     assert "sys.network" in by_id
     assert by_id["sys.network"].severity is Severity.FAIL
-    assert "no active internet connection" in by_id["sys.network"].message
+    assert "internet access unavailable (HTTPS checks failed)" == by_id["sys.network"].message
     assert "sys.packages" not in by_id
     assert "sys.aur" not in by_id
     assert "sys.flatpak" not in by_id
@@ -701,7 +697,7 @@ def test_system_upgrade_offline_aborts_immediately(tmp_path: Path) -> None:
 
     code = service.run(_context(tmp_path), console)
     assert code == 1
-    assert any("No active internet connection detected" in msg for msg in console.messages)
+    assert any("HTTPS connectivity checks failed" in msg for msg in console.messages)
 
 
 def test_detect_aur_helper_prefers_paru_then_yay() -> None:

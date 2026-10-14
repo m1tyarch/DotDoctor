@@ -25,6 +25,19 @@ class FixOutcome:
     note: str
 
 
+@dataclass(frozen=True)
+class RemovalPackage:
+    name: str
+    version: str
+    size: int
+
+
+@dataclass(frozen=True)
+class OrphanRemovalPlan:
+    targets: tuple[str, ...]
+    packages: tuple[RemovalPackage, ...]
+
+
 class InteractiveAutoFixer:
     """Interactive auto-fix orchestrator for system hygiene WARN/FAIL findings."""
 
@@ -74,7 +87,11 @@ class InteractiveAutoFixer:
             }
 
             try:
-                should_fix = typer.confirm(prompt, default=default_choice)
+                # Orphans require a fresh pacman transaction preview before
+                # their own confirmation, which the handler presents.
+                should_fix = result.check_id == "sys.orphans" or typer.confirm(
+                    prompt, default=default_choice
+                )
             except (typer.Abort, Exception):
                 self._console.print("[dim]Skipped by user.[/dim]")
                 continue
@@ -223,12 +240,6 @@ class InteractiveAutoFixer:
         }
         if result.check_id in prompts:
             return prompts[result.check_id]
-        if result.check_id == "sys.orphans":
-            orphans = result.details.get("orphans", [])
-            count = len(orphans)
-            noun = "package" if count == 1 else "packages"
-            return f"Orphan {noun} detected ({count}). Remove them now?"
-
         if result.check_id == "sys.cache":
             return "Pacman cache can be reclaimed. Clean cache now?"
 
@@ -264,29 +275,92 @@ class InteractiveAutoFixer:
         if shutil.which("pacman") is None:
             return FixOutcome(changed=False, note="pacman is not installed.")
 
-        orphans = list(result.details.get("orphans", []))
-        if not orphans:
-            res = subprocess.run(
-                ["pacman", "-Qtdq"],
+        try:
+            plan = self._read_orphan_plan()
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            return FixOutcome(False, f"Unable to prepare removal plan: {exc}")
+        if not plan.packages:
+            return FixOutcome(changed=False, note="No orphan packages to remove.")
+
+        from dotdoctor.application.system_update import _format_bytes
+
+        count = len(plan.packages)
+        noun = "package" if count == 1 else "packages"
+        size = _format_bytes(sum(package.size for package in plan.packages))
+        for line in format_status_line("", f"Removal plan: {count} {noun} · ~{size} to free"):
+            self._console.print(line)
+        for package in plan.packages:
+            dependency = " (dependency)" if package.name not in plan.targets else ""
+            for line in format_status_line("", f"{package.name} {package.version}{dependency}"):
+                self._console.print(line)
+        try:
+            prompt = (
+                "Remove this package now?" if count == 1 else f"Remove these {count} packages now?"
+            )
+            if not typer.confirm(prompt, default=True):
+                return FixOutcome(False, "Removal declined.")
+        except typer.Abort:
+            return FixOutcome(False, "Removal declined.")
+
+        def revalidate() -> FixOutcome | None:
+            try:
+                if self._read_orphan_plan() == plan:
+                    return None
+                return FixOutcome(
+                    False, "Removal plan changed; run dotdoctor --fix to review again."
+                )
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                return FixOutcome(False, f"Unable to verify removal plan: {exc}")
+
+        # The preview resolves -s recursively. Execute the exact approved set
+        # without -s, so pacman cannot silently add newly removable dependencies.
+        cmd = ["sudo", "pacman", "-Rn", "--noconfirm", "--", *[p.name for p in plan.packages]]
+        outcome = self._run_maintenance_commands(
+            [(cmd, self._resolve_action_label(result.check_id))], preflight=revalidate
+        )
+        if outcome.changed:
+            return FixOutcome(changed=True, note=f"Removed {count} {noun} from the approved plan.")
+        return outcome
+
+    @staticmethod
+    def _read_orphan_plan() -> OrphanRemovalPlan:
+        def read(command: list[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=15,
+                env={**os.environ, "LC_ALL": "C"},
             )
-            if res.returncode == 0:
-                orphans = [line.strip() for line in res.stdout.splitlines() if line.strip()]
 
-        if not orphans:
-            return FixOutcome(changed=False, note="No orphan packages to remove.")
-
-        cmd = ["sudo", "pacman", "-Rns", "--noconfirm", *orphans]
-        outcome = self._run_maintenance_commands(
-            [(cmd, self._resolve_action_label(result.check_id))]
-        )
-        if outcome.changed:
-            count = len(orphans)
-            noun = "package" if count == 1 else "packages"
-            return FixOutcome(changed=True, note=f"Removed {count} orphan {noun}.")
-        return outcome
+        query = read(["pacman", "-Qtdq"])
+        if query.returncode == 1 and not query.stdout.strip() and not query.stderr.strip():
+            return OrphanRemovalPlan((), ())
+        if query.returncode:
+            raise ValueError(query.stderr.strip() or "pacman orphan query failed")
+        targets = tuple(sorted(set(query.stdout.split())))
+        if not targets:
+            return OrphanRemovalPlan((), ())
+        if any(not PACKAGE_RE.fullmatch(target) for target in targets):
+            raise ValueError("invalid package name in orphan query")
+        preview = read(["pacman", "-Rns", "--print-format", "%n\t%v\t%s", "--", *targets])
+        if preview.returncode:
+            raise ValueError(preview.stderr.strip() or "pacman removal preview failed")
+        packages: list[RemovalPackage] = []
+        for line in preview.stdout.splitlines():
+            fields = line.split("\t")
+            if len(fields) != 3:
+                raise ValueError("invalid pacman removal preview")
+            name, version, size = fields
+            if not PACKAGE_RE.fullmatch(name) or not version or not size.isdecimal():
+                raise ValueError("invalid package in removal preview")
+            packages.append(RemovalPackage(name, version, int(size)))
+        names = {package.name for package in packages}
+        if len(names) != len(packages) or not set(targets).issubset(names):
+            raise ValueError("incomplete or duplicate removal preview")
+        return OrphanRemovalPlan(targets, tuple(sorted(packages, key=lambda package: package.name)))
 
     def _fix_sys_cache(self, context: ScanContext, result: CheckResult) -> FixOutcome:
         if shutil.which("paccache") is not None:
@@ -473,7 +547,11 @@ class InteractiveAutoFixer:
             ]
         )
 
-    def _run_maintenance_commands(self, commands: list[tuple[list[str], str]]) -> FixOutcome:
+    def _run_maintenance_commands(
+        self,
+        commands: list[tuple[list[str], str]],
+        preflight: Callable[[], FixOutcome | None] | None = None,
+    ) -> FixOutcome:
         """Authenticate with the terminal idle, then run captured, noninteractive steps."""
         if not commands:
             return FixOutcome(False, "No safe automated action is available.")
@@ -495,6 +573,11 @@ class InteractiveAutoFixer:
                         )
             except subprocess.TimeoutExpired:
                 return FixOutcome(False, "Sudo authentication timed out; maintenance not started.")
+
+        if preflight is not None:
+            blocked = preflight()
+            if blocked is not None:
+                return blocked
 
         for command, label in commands:
             if command[0] == "sudo":

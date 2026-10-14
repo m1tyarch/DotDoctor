@@ -1,10 +1,11 @@
+import json
 import os
 import platform
 import re
 import shlex
 import shutil
-import socket
 import subprocess
+import sys
 import textwrap
 import threading
 import time
@@ -44,26 +45,32 @@ from dotdoctor.domain.models import CheckResult, ScanReport, Severity
 from dotdoctor.infrastructure.audit_processes import AuditCancelled, AuditSession, check_cancelled
 from dotdoctor.infrastructure.audit_processes import capture as capture_command
 from dotdoctor.infrastructure.maintenance import MaintenanceState, capture
+from dotdoctor.infrastructure.network_worker import HTTPS_TARGETS
 
 _ORIGINAL_SUBPROCESS_RUN = subprocess.run
 
 
 def is_online(
-    targets: tuple[tuple[str, int], ...] = (
-        ("1.1.1.1", 53),
-        ("8.8.8.8", 53),
-        ("9.9.9.9", 53),
-    ),
+    targets: tuple[str, ...] = HTTPS_TARGETS,
     timeout: float = 1.5,
 ) -> bool:
-    """Check if the system has an active internet connection."""
-    for host, port in targets:
-        try:
-            with socket.create_connection((host, port), timeout=timeout):
-                return True
-        except (OSError, TimeoutError):
-            continue
-    return False
+    """Check HTTPS reachability with a shared deadline, including DNS resolution."""
+    if not targets or timeout <= 0:
+        return False
+    try:
+        completed = capture_command(
+            [
+                sys.executable,
+                "-m",
+                "dotdoctor.infrastructure.network_worker",
+                json.dumps(targets),
+                str(timeout),
+            ],
+            timeout=timeout + 1.0,
+        )
+        return completed.returncode == 0 and json.loads(completed.stdout) is True
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
 
 
 @dataclass(frozen=True)
@@ -390,8 +397,8 @@ class SystemDryRunService:
                     runner=lambda: CheckResult(
                         check_id="sys.network",
                         severity=Severity.FAIL,
-                        message="no active internet connection",
-                        remediation="connect to the internet and retry",
+                        message="internet access unavailable (HTTPS checks failed)",
+                        remediation="check connection, DNS and proxy settings, then retry",
                     ),
                 )
             )
@@ -519,8 +526,8 @@ class SystemDryRunService:
                     return CheckResult(
                         check_id=check_id,
                         severity=Severity.FAIL,
-                        message="check blocked: no active internet connection",
-                        remediation="connect to the internet and retry",
+                        message="check blocked: internet access unavailable",
+                        remediation="check connection, DNS and proxy settings, then retry",
                         details={"verified": False, "blocked_by": "sys.network"},
                     )
 
@@ -1517,7 +1524,8 @@ class SystemUpgradeService:
     def run(self, context: ScanContext, console: Console) -> int:
         if not self._is_online_fn():
             console.print(
-                "[red]FAIL: No active internet connection detected. "
+                "[red]FAIL: HTTPS connectivity checks failed. "
+                "Check connection, DNS and proxy settings. "
                 "Aborting system upgrade.[/red]"
             )
             return 1

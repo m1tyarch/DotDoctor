@@ -126,12 +126,31 @@ Use `arch-audit -c` to inspect CVEs and compare with upstream advisories.
 After upgrades, actionable findings show check IDs, package details, and review commands;
 remaining check findings are displayed separately from completed action counts.
 
-When the connectivity check detects no internet connection, `sys.network` reports
+Connectivity is checked with parallel HTTPS HEAD requests to Arch Linux, AUR and
+Flathub, using the system's TLS trust and proxy settings from the environment.
+Any HTTPS response,
+including a service error or rejected HEAD request, establishes reachability;
+individual checks still report failures of their own services. A successful probe
+returns immediately. All probes share a 1.5-second deadline, with a separate
+process limit of 2.5 seconds including startup and blocked DNS resolution. Public
+DNS servers on port 53 are not used as connectivity tests.
+
+When none of the HTTPS probes establishes connectivity, `sys.network` reports
 FAIL. Registered `sys.news` and `sys.security` checks also report FAIL with the
 same network cause, without fetching remote data. Their JSON results include
 `verified: false` and `blocked_by: sys.network`; they establish no news or security
 findings. Other network-dependent update checks are omitted until connectivity
 is restored. Local checks continue to run.
+
+Before orphan removal, DotDoctor queries the current orphan list and asks pacman
+for a read-only recursive removal plan using `-Rns --print-format`. It shows every
+package and version, marks additional dependencies and estimates the space to
+free from installed package sizes. This estimate may differ from actual freed
+filesystem space. An unreadable or invalid plan prevents removal.
+After confirmation and sudo authentication, the plan is read again. Changes to
+its targets, versions or sizes stop the action and require another review.
+The approved package set is removed with `-Rn`, without recursively adding new
+dependencies, and the orphan check runs again afterward.
 
 Reboot detection (`sys.reboot`) compares the running kernel version with installed
 module directories without sudo. Kernel journal scanning has been removed from

@@ -32,12 +32,19 @@ def test_fix_sys_orphans_removes_packages(monkeypatch, tmp_path: Path) -> None:
 
     def fake_run(cmd, *args, **kwargs):
         commands.append(cmd)
+        if cmd == ["pacman", "-Qtdq"]:
+            return SimpleNamespace(returncode=0, stdout="libfoo\nlibbar\n", stderr="")
+        if cmd[:2] == ["pacman", "-Rns"]:
+            return SimpleNamespace(
+                returncode=0, stdout="libfoo\t1.0\t1024\nlibbar\t2.0\t2048\n", stderr=""
+            )
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(
         "dotdoctor.application.auto_fix.shutil.which", lambda name: f"/usr/bin/{name}"
     )
     monkeypatch.setattr("dotdoctor.application.auto_fix.subprocess.run", fake_run)
+    monkeypatch.setattr("dotdoctor.application.auto_fix.typer.confirm", lambda *a, **k: True)
 
     result = CheckResult(
         check_id="sys.orphans",
@@ -48,10 +55,14 @@ def test_fix_sys_orphans_removes_packages(monkeypatch, tmp_path: Path) -> None:
     outcome = fixer._fix_sys_orphans(context, result)
 
     assert outcome.changed is True
-    assert "Removed 2 orphan packages" in outcome.note
+    assert "Removed 2 packages" in outcome.note
     assert commands == [
+        ["pacman", "-Qtdq"],
+        ["pacman", "-Rns", "--print-format", "%n\t%v\t%s", "--", "libbar", "libfoo"],
         ["sudo", "-n", "-v"],
-        ["sudo", "-n", "pacman", "-Rns", "--noconfirm", "libfoo", "libbar"],
+        ["pacman", "-Qtdq"],
+        ["pacman", "-Rns", "--print-format", "%n\t%v\t%s", "--", "libbar", "libfoo"],
+        ["sudo", "-n", "pacman", "-Rn", "--noconfirm", "--", "libbar", "libfoo"],
     ]
 
 
@@ -64,13 +75,18 @@ def test_fix_sys_orphans_queries_when_details_empty(monkeypatch, tmp_path: Path)
     def fake_run(cmd, *args, **kwargs):
         commands.append(cmd)
         if cmd == ["pacman", "-Qtdq"]:
-            return SimpleNamespace(returncode=0, stdout="orphan1\norphan2\n")
+            return SimpleNamespace(returncode=0, stdout="orphan1\norphan2\n", stderr="")
+        if cmd[:2] == ["pacman", "-Rns"]:
+            return SimpleNamespace(
+                returncode=0, stdout="orphan1\t1.0\t1024\norphan2\t2.0\t2048\n", stderr=""
+            )
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(
         "dotdoctor.application.auto_fix.shutil.which", lambda name: f"/usr/bin/{name}"
     )
     monkeypatch.setattr("dotdoctor.application.auto_fix.subprocess.run", fake_run)
+    monkeypatch.setattr("dotdoctor.application.auto_fix.typer.confirm", lambda *a, **k: True)
 
     result = CheckResult(
         check_id="sys.orphans",
@@ -81,8 +97,8 @@ def test_fix_sys_orphans_queries_when_details_empty(monkeypatch, tmp_path: Path)
     outcome = fixer._fix_sys_orphans(context, result)
 
     assert outcome.changed is True
-    assert "Removed 2 orphan packages" in outcome.note
-    assert ["sudo", "-n", "pacman", "-Rns", "--noconfirm", "orphan1", "orphan2"] in commands
+    assert "Removed 2 packages" in outcome.note
+    assert ["sudo", "-n", "pacman", "-Rn", "--noconfirm", "--", "orphan1", "orphan2"] in commands
 
 
 def test_fix_sys_cache_runs_paccache(monkeypatch, tmp_path: Path) -> None:
@@ -469,7 +485,10 @@ def test_interactive_auto_fixer_apply_skips_outd_and_prompts_warn(
     monkeypatch.setattr("dotdoctor.application.auto_fix.typer.confirm", fake_confirm)
     monkeypatch.setattr(
         "dotdoctor.application.auto_fix.InteractiveAutoFixer._fix_sys_orphans",
-        lambda self, ctx, res: FixOutcome(changed=True, note="Removed 1 orphan package."),
+        lambda self, ctx, res: FixOutcome(
+            changed=typer.confirm("Remove these 1 package now?", default=True),
+            note="Removed 1 orphan package.",
+        ),
     )
 
     report = ScanReport(

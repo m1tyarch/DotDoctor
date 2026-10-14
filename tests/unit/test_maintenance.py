@@ -924,8 +924,11 @@ def test_offline_scan_never_fetches_news_or_security(monkeypatch, tmp_path, disa
     offline = [item for item in report.results if item.check_id in {"sys.news", "sys.security"}]
     assert len(offline) == 2
     assert all(item.severity == Severity.FAIL for item in report.results)
-    assert all(item.message == "check blocked: no active internet connection" for item in offline)
-    assert all(item.remediation == "connect to the internet and retry" for item in offline)
+    assert all(item.message == "check blocked: internet access unavailable" for item in offline)
+    assert all(
+        item.remediation == "check connection, DNS and proxy settings, then retry"
+        for item in offline
+    )
     assert all(item.details == {"verified": False, "blocked_by": "sys.network"} for item in offline)
     assert report.exit_code == 2
     assert ("sys.network" in {item.check_id for item in report.results}) == (

@@ -278,6 +278,17 @@ def test_orphan_removal_keeps_authentication_visible_and_captures_pacman_output(
 
     def run(command, **kwargs):
         env.state.calls.append(command)
+        if command[0] == "pacman":
+            assert not env.state.active
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "chrpath\ntelegram-desktop-bin-debug\n"
+                    if command == ["pacman", "-Qtdq"]
+                    else "chrpath\t0.18-1\t1024\ntelegram-desktop-bin-debug\t7.3.1-1\t2048\n"
+                ),
+                stderr="",
+            )
         if command in (["sudo", "-n", "-v"], ["sudo", "-v"]):
             assert not env.state.active
             if command == ["sudo", "-v"]:
@@ -289,8 +300,9 @@ def test_orphan_removal_keeps_authentication_visible_and_captures_pacman_output(
             "sudo",
             "-n",
             "pacman",
-            "-Rns",
+            "-Rn",
             "--noconfirm",
+            "--",
             "chrpath",
             "telegram-desktop-bin-debug",
         ]
@@ -309,7 +321,9 @@ def test_orphan_removal_keeps_authentication_visible_and_captures_pacman_output(
     assert report.results[0].severity == Severity.PASS
     assert env.state.verified and not env.state.active
     assert len(set(frames)) >= 3
-    assert env.state.calls[:1] == [["sudo", "-n", "-v"]]
+    assert [command for command in env.state.calls if command[0] == "sudo"][:1] == [
+        ["sudo", "-n", "-v"]
+    ]
     assert "DONE" in env.output.getvalue()
     assert "(1/2) removing" not in env.output.getvalue()
     assert ("[sudo] password for test:" in env.output.getvalue()) is (not cached)
@@ -328,6 +342,13 @@ def test_failed_orphan_removal_does_not_claim_success(monkeypatch, environment, 
 
     def run(command, **kwargs):
         env.state.calls.append(command)
+        if command[0] == "pacman":
+            assert not env.state.active
+            return SimpleNamespace(
+                returncode=0,
+                stdout="chrpath\n" if command == ["pacman", "-Qtdq"] else "chrpath\t0.18-1\t1024\n",
+                stderr="",
+            )
         if command in (["sudo", "-n", "-v"], ["sudo", "-v"]):
             assert not env.state.active
             return SimpleNamespace(returncode=int(failure == "auth"))
@@ -352,7 +373,7 @@ def test_failed_orphan_removal_does_not_claim_success(monkeypatch, environment, 
         assert apply(env).results[0].severity == Severity.WARN
         if failure == "auth":
             assert env.state.grids == []
-            assert all(command[0] == "sudo" and command[-1] == "-v" for command in env.state.calls)
+            assert all(command[-1] == "-v" for command in env.state.calls if command[0] == "sudo")
         else:
             assert (
                 "password is required" if failure == "expired" else "failed transaction"

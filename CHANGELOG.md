@@ -8,8 +8,16 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Replace public DNS-port connectivity probes with parallel HTTPS checks and
+  bounded DNS resolution; a single unavailable service does not mark the system offline.
 - Use FAIL consistently for news and security checks blocked by unavailable
   internet, matching the network check and preserving the cause in JSON.
+
+### Added
+
+- Show the complete pacman orphan-removal plan, package versions, additional
+  dependencies and estimated space to free before confirmation. Revalidate after
+  sudo authentication and remove only the approved set.
 
 ## [0.2.0-beta.1] - 2026-10-11
 
