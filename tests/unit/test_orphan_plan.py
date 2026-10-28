@@ -39,7 +39,7 @@ def environment(monkeypatch, tmp_path):
         if command == ["pacman", "-Qtdq"]:
             state.queries += 1
             return SimpleNamespace(returncode=0, stdout="orphan\n", stderr="")
-        if command[:2] == ["pacman", "-Rns"]:
+        if command[:2] == ["pacman", "-Rs"]:
             state.previews += 1
             assert "--print-format" in command
             assert "--" in command
@@ -93,6 +93,32 @@ def test_full_plan_is_shown_before_confirmation_and_exact_set_is_removed(environ
     assert "old" not in env.state.commands[-1]
 
 
+def test_pacman_print_mode_rejects_nosave_but_real_removal_keeps_it(monkeypatch, environment):
+    env = environment
+
+    def run(command, **kwargs):
+        if command[0] == "pacman" and "--print-format" in command:
+            flags = set()
+            for arg in command[1 : command.index("--")]:
+                if arg.startswith("-") and not arg.startswith("--"):
+                    flags.update(arg[1:])
+            if "n" in flags or "--nosave" in command:
+                return SimpleNamespace(
+                    returncode=1,
+                    stdout="",
+                    stderr=(
+                        "error: invalid option: '--nosave' and '--print' may not be used together"
+                    ),
+                )
+        return env.run(command, **kwargs)
+
+    monkeypatch.setattr(fixes.subprocess, "run", run)
+    assert apply(env).results[0].severity == Severity.PASS
+    assert env.state.verified
+    assert "-Rn" in env.state.commands[-1]
+    assert "invalid option" not in env.output.getvalue()
+
+
 def test_declining_plan_does_not_authenticate_or_remove(monkeypatch, environment):
     env = environment
     monkeypatch.setattr(fixes.typer, "confirm", lambda *a, **kw: False)
@@ -111,7 +137,7 @@ def test_plan_changes_after_authentication_stop_removal(monkeypatch, environment
         if command[0] == "pacman" and env.state.queries == 2:
             if change == "orphan" and command == ["pacman", "-Qtdq"]:
                 return SimpleNamespace(returncode=1, stdout="", stderr="")
-            if command[:2] == ["pacman", "-Rns"]:
+            if command[:2] == ["pacman", "-Rs"]:
                 result.stdout = {
                     "version": result.stdout.replace("1.0-1", "1.0-2"),
                     "size": result.stdout.replace("1048576", "1048577"),
@@ -142,7 +168,7 @@ def test_invalid_preview_never_asks_to_remove(monkeypatch, environment, preview)
 
     def run(command, **kwargs):
         result = env.run(command, **kwargs)
-        if command[:2] == ["pacman", "-Rns"]:
+        if command[:2] == ["pacman", "-Rs"]:
             result.stdout = preview
         return result
 
@@ -159,7 +185,7 @@ def test_reader_failure_never_removes_packages(monkeypatch, environment, failure
     def run(command, **kwargs):
         result = env.run(command, **kwargs)
         if (failure == "query" and command == ["pacman", "-Qtdq"]) or (
-            failure in {"preview", "timeout"} and command[:2] == ["pacman", "-Rns"]
+            failure in {"preview", "timeout"} and command[:2] == ["pacman", "-Rs"]
         ):
             if failure == "timeout":
                 raise subprocess.TimeoutExpired(command, 15)

@@ -34,7 +34,7 @@ def test_fix_sys_orphans_removes_packages(monkeypatch, tmp_path: Path) -> None:
         commands.append(cmd)
         if cmd == ["pacman", "-Qtdq"]:
             return SimpleNamespace(returncode=0, stdout="libfoo\nlibbar\n", stderr="")
-        if cmd[:2] == ["pacman", "-Rns"]:
+        if cmd[:2] == ["pacman", "-Rs"]:
             return SimpleNamespace(
                 returncode=0, stdout="libfoo\t1.0\t1024\nlibbar\t2.0\t2048\n", stderr=""
             )
@@ -58,10 +58,10 @@ def test_fix_sys_orphans_removes_packages(monkeypatch, tmp_path: Path) -> None:
     assert "Removed 2 packages" in outcome.note
     assert commands == [
         ["pacman", "-Qtdq"],
-        ["pacman", "-Rns", "--print-format", "%n\t%v\t%s", "--", "libbar", "libfoo"],
+        ["pacman", "-Rs", "--print-format", "%n\t%v\t%s", "--", "libbar", "libfoo"],
         ["sudo", "-n", "-v"],
         ["pacman", "-Qtdq"],
-        ["pacman", "-Rns", "--print-format", "%n\t%v\t%s", "--", "libbar", "libfoo"],
+        ["pacman", "-Rs", "--print-format", "%n\t%v\t%s", "--", "libbar", "libfoo"],
         ["sudo", "-n", "pacman", "-Rn", "--noconfirm", "--", "libbar", "libfoo"],
     ]
 
@@ -76,7 +76,7 @@ def test_fix_sys_orphans_queries_when_details_empty(monkeypatch, tmp_path: Path)
         commands.append(cmd)
         if cmd == ["pacman", "-Qtdq"]:
             return SimpleNamespace(returncode=0, stdout="orphan1\norphan2\n", stderr="")
-        if cmd[:2] == ["pacman", "-Rns"]:
+        if cmd[:2] == ["pacman", "-Rs"]:
             return SimpleNamespace(
                 returncode=0, stdout="orphan1\t1.0\t1024\norphan2\t2.0\t2048\n", stderr=""
             )

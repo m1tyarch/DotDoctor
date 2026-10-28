@@ -463,6 +463,22 @@ def _system_dry_run_impl(
             # Re-evaluate report after system update
             report = service.run(context, disabled_checks=all_disabled)
             has_issues = any(r.severity in {Severity.WARN, Severity.FAIL} for r in report.results)
+            if has_issues:
+                console.print()
+                console.print("[dim]Post-update findings:[/dim]")
+                render_terminal_report(
+                    ScanReport(
+                        profile=report.profile,
+                        results=[
+                            result
+                            for result in report.results
+                            if result.severity in {Severity.WARN, Severity.FAIL}
+                        ],
+                    ),
+                    console,
+                    print_header=False,
+                    verbose=verbose,
+                )
 
     if has_issues:
         fixer = InteractiveAutoFixer(console, config=loaded_cfg)

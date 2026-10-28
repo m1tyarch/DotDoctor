@@ -125,6 +125,10 @@ as PASS. SKIP does not establish that a package is safe or affected.
 Use `arch-audit -c` to inspect CVEs and compare with upstream advisories.
 After upgrades, actionable findings show check IDs, package details, and review commands;
 remaining check findings are displayed separately from completed action counts.
+In the default audit's update-and-fix flow, the fresh post-update WARN/FAIL
+findings are displayed before any fix offer. A clean or neutral report does not
+trigger a fix offer; findings requiring manual review are shown without an offer
+unless a supported automatic action is also available.
 
 Connectivity is checked with parallel HTTPS HEAD requests to Arch Linux, AUR and
 Flathub, using the system's TLS trust and proxy settings from the environment.
@@ -143,7 +147,7 @@ findings. Other network-dependent update checks are omitted until connectivity
 is restored. Local checks continue to run.
 
 Before orphan removal, DotDoctor queries the current orphan list and asks pacman
-for a read-only recursive removal plan using `-Rns --print-format`. It shows every
+for a read-only recursive removal plan using `-Rs --print-format`. It shows every
 package and version, marks additional dependencies and estimates the space to
 free from installed package sizes. This estimate may differ from actual freed
 filesystem space. An unreadable or invalid plan prevents removal.
@@ -151,6 +155,8 @@ After confirmation and sudo authentication, the plan is read again. Changes to
 its targets, versions or sizes stop the action and require another review.
 The approved package set is removed with `-Rn`, without recursively adding new
 dependencies, and the orphan check runs again afterward.
+The preview omits `--nosave`, which pacman does not allow with `--print-format`;
+this flag affects configuration-file handling during deletion, not the package set.
 
 Reboot detection (`sys.reboot`) compares the running kernel version with installed
 module directories without sudo. Kernel journal scanning has been removed from

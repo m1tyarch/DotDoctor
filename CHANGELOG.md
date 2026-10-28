@@ -8,6 +8,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Show post-update findings before offering fixes; omit the offer when the fresh
+  report has no supported fixes. Correct orphan dry-run flags: pacman rejects
+  combining `--nosave` with `--print-format`, so preview with `-Rs` and retain
+  `-Rn` only for the approved removal transaction.
 - Replace public DNS-port connectivity probes with parallel HTTPS checks and
   bounded DNS resolution; a single unavailable service does not mark the system offline.
 - Use FAIL consistently for news and security checks blocked by unavailable

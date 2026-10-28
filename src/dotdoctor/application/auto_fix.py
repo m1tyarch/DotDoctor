@@ -345,7 +345,9 @@ class InteractiveAutoFixer:
             return OrphanRemovalPlan((), ())
         if any(not PACKAGE_RE.fullmatch(target) for target in targets):
             raise ValueError("invalid package name in orphan query")
-        preview = read(["pacman", "-Rns", "--print-format", "%n\t%v\t%s", "--", *targets])
+        # --nosave changes config-file handling during deletion, not the package
+        # set. Pacman rejects it in combination with --print/--print-format.
+        preview = read(["pacman", "-Rs", "--print-format", "%n\t%v\t%s", "--", *targets])
         if preview.returncode:
             raise ValueError(preview.stderr.strip() or "pacman removal preview failed")
         packages: list[RemovalPackage] = []
