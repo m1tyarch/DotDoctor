@@ -367,9 +367,9 @@ def test_render_terminal_report_packages_default_truncation() -> None:
             CheckResult(
                 check_id="sys.packages",
                 severity=Severity.OUTD,
-                message="5 updates available (reboot required: linux)",
-                remediation="run dotdoctor --sysup",
-                details={"packages": pkgs, "critical": ["linux"]},
+                message="5 updates available",
+                remediation="dotdoctor --sysup",
+                details={"packages": pkgs},
             )
         ],
         summary={"PASS": 0, "OUTD": 1, "WARN": 0, "FAIL": 0},

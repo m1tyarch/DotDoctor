@@ -1286,7 +1286,12 @@ def test_system_upgrade_snapshot_creation_fails(monkeypatch, tmp_path: Path) -> 
     assert "1 failed" in rendered
 
 
-def test_check_arch_packages_critical_detection(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("first", "second"), [("linux", "systemd"), ("mesa", "vulkan-intel"), ("grub", "mkinitcpio")]
+)
+def test_check_arch_packages_does_not_predict_reboot(
+    monkeypatch, tmp_path: Path, first: str, second: str
+) -> None:
     service = SystemDryRunService()
 
     def fake_which(name: str) -> str | None:
@@ -1296,9 +1301,7 @@ def test_check_arch_packages_critical_detection(monkeypatch, tmp_path: Path) -> 
 
     def fake_run(*args, **kwargs):
         stdout = (
-            "linux 6.10.1-arch1-1 -> 6.10.2-arch1-1\n"
-            "systemd 256.1-1 -> 256.2-1\n"
-            "htop 3.3.0-1 -> 3.3.0-2\n"
+            f"{first} 1.0-1 -> 1.0-2\n" f"{second} 1.0-1 -> 1.0-2\n" "htop 3.3.0-1 -> 3.3.0-2\n"
         )
         return SimpleNamespace(returncode=0, stderr="", stdout=stdout)
 
@@ -1307,16 +1310,17 @@ def test_check_arch_packages_critical_detection(monkeypatch, tmp_path: Path) -> 
 
     result = service._check_arch_packages(_context(tmp_path))
     assert result.severity is Severity.OUTD
-    assert "3 updates available (reboot required: linux, systemd)" in result.message
-    assert result.details["critical"] == ["linux", "systemd"]
+    assert result.message == "3 updates available"
+    assert "critical" not in result.details
+    assert "reboot_required" not in result.details
     assert result.details["packages"] == [
-        "linux 6.10.1-arch1-1 -> 6.10.2-arch1-1",
-        "systemd 256.1-1 -> 256.2-1",
+        f"{first} 1.0-1 -> 1.0-2",
+        f"{second} 1.0-1 -> 1.0-2",
         "htop 3.3.0-1 -> 3.3.0-2",
     ]
 
 
-def test_check_aur_packages_critical_detection(monkeypatch, tmp_path: Path) -> None:
+def test_check_aur_packages_does_not_predict_reboot(monkeypatch, tmp_path: Path) -> None:
     service = SystemDryRunService()
 
     def fake_which(name: str) -> str | None:
@@ -1333,8 +1337,9 @@ def test_check_aur_packages_critical_detection(monkeypatch, tmp_path: Path) -> N
 
     result = service._check_aur_packages(_context(tmp_path), aur_helper="yay")
     assert result.severity is Severity.OUTD
-    assert "2 AUR updates available (reboot required: nvidia-dkms)" in result.message
-    assert result.details["critical"] == ["nvidia-dkms"]
+    assert result.message == "2 AUR updates available"
+    assert "critical" not in result.details
+    assert "reboot_required" not in result.details
     assert result.details["packages"] == [
         "nvidia-dkms 555.58-1 -> 560.35-1",
         "spotify 1:1.2.42-1 -> 1:1.2.45-1",

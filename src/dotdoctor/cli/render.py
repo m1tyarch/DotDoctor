@@ -149,7 +149,6 @@ def render_terminal_report(
             else None
         )
         item_noun = "item" if result.details.get("items") else "package"
-        critical = result.details.get("critical") if result.details else None
         if (
             packages
             and isinstance(packages, list)
@@ -159,17 +158,7 @@ def render_terminal_report(
             if verbose:
                 to_show = packages
             else:
-                if critical:
-                    for pkg in packages:
-                        p_name = pkg.split()[0].replace("•", "").strip()
-                        if p_name in critical:
-                            to_show.append(pkg)
-                if len(to_show) < 3:
-                    for pkg in packages:
-                        if pkg not in to_show:
-                            to_show.append(pkg)
-                        if len(to_show) >= 3:
-                            break
+                to_show = packages[:3]
 
             for pkg in to_show:
                 pkg_text = f"• {pkg}"

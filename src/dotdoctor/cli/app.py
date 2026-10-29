@@ -373,16 +373,6 @@ def _system_upgrade_impl(
         render_terminal_report(update_report, console, print_header=False, verbose=verbose)
 
     if has_updates:
-        crit_names: list[str] = []
-        for item in report.results:
-            if item.severity is Severity.OUTD and item.details and item.details.get("critical"):
-                crit_names.extend(item.details["critical"])
-        if crit_names:
-            crit_str = ", ".join(sorted(set(crit_names)))
-            console.print(
-                f"\n  [yellow]Note: Critical updates detected ({crit_str}) — "
-                "reboot will be recommended.[/yellow]"
-            )
         console.print()
 
     if has_fails and not has_updates:
@@ -438,16 +428,6 @@ def _system_dry_run_impl(
     has_issues = any(r.severity in {Severity.WARN, Severity.FAIL} for r in report.results)
 
     if has_updates:
-        crit_names: list[str] = []
-        for item in report.results:
-            if item.severity is Severity.OUTD and item.details and item.details.get("critical"):
-                crit_names.extend(item.details["critical"])
-        if crit_names:
-            crit_str = ", ".join(sorted(set(crit_names)))
-            console.print(
-                f"\n  [yellow]Note: Critical updates detected ({crit_str}) — "
-                "reboot will be recommended.[/yellow]"
-            )
         console.print()
         if _safe_confirm("Update everything now?", default=True):
             console.print()

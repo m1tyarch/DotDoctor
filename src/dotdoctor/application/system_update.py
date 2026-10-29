@@ -680,38 +680,25 @@ class SystemDryRunService:
             return _result_for_count("sys.packages", 0)
 
         pkg_entries: list[str] = []
-        critical_pkgs: list[str] = []
         for line in lines:
             parsed = parse_package_update_line(line)
             if parsed:
                 pkg_name, old_v, new_v = parsed
                 pkg_entries.append(f"{pkg_name} {old_v} -> {new_v}")
-                if pkg_name in CRITICAL_PACKAGES:
-                    critical_pkgs.append(pkg_name)
             else:
-                pkg_name = line.split()[0] if line.split() else line
                 pkg_entries.append(line)
-                if pkg_name in CRITICAL_PACKAGES:
-                    critical_pkgs.append(pkg_name)
 
         count = len(lines)
-        unique_critical = sorted(set(critical_pkgs))
         noun = "update" if count == 1 else "updates"
-        if unique_critical:
-            crit_str = ", ".join(unique_critical)
-            msg = f"{count} {noun} available (reboot required: {crit_str})"
-        else:
-            msg = f"{count} {noun} available"
 
         return CheckResult(
             check_id="sys.packages",
             severity=Severity.OUTD,
-            message=msg,
+            message=f"{count} {noun} available",
             remediation="dotdoctor --sysup",
             details={
                 "updates": count,
                 "packages": pkg_entries,
-                "critical": unique_critical,
             },
         )
 
@@ -932,11 +919,10 @@ class SystemDryRunService:
                 severity=Severity.PASS,
                 message="up to date",
                 remediation=None,
-                details={"updates": 0, "flagged": 0, "packages": [], "critical": []},
+                details={"updates": 0, "flagged": 0, "packages": []},
             )
 
         aur_entries: list[str] = []
-        critical_aur: list[str] = []
         for line in lines:
             parts = line.split()
             pkg_name = parts[0]
@@ -948,17 +934,13 @@ class SystemDryRunService:
                 aur_entries.append(f"{pkg_name} {old_v} -> {new_v}")
             else:
                 aur_entries.append(line)
-            if pkg_name in CRITICAL_PACKAGES:
-                critical_aur.append(pkg_name)
 
         count = len(lines)
-        unique_crit = sorted(set(critical_aur))
         noun = "update" if count == 1 else "updates"
-        crit_suffix = f" (reboot required: {', '.join(unique_crit)})" if unique_crit else ""
         if flagged:
-            msg = f"{count} AUR {noun} available ({len(flagged)} flagged out-of-date){crit_suffix}"
+            msg = f"{count} AUR {noun} available ({len(flagged)} flagged out-of-date)"
         else:
-            msg = f"{len(regular)} AUR {noun} available{crit_suffix}"
+            msg = f"{len(regular)} AUR {noun} available"
 
         return CheckResult(
             check_id="sys.aur",
@@ -969,7 +951,6 @@ class SystemDryRunService:
                 "updates": len(regular),
                 "flagged": len(flagged),
                 "packages": aur_entries,
-                "critical": unique_crit,
             },
         )
 
@@ -1303,35 +1284,6 @@ def _result_for_count(check_id: str, updates: int) -> CheckResult:
         remediation=None,
         details={"updates": 0},
     )
-
-
-CRITICAL_PACKAGES: frozenset[str] = frozenset(
-    {
-        "linux",
-        "linux-zen",
-        "linux-lts",
-        "linux-hardened",
-        "linux-cachyos",
-        "linux-cachyos-bore",
-        "linux-cachyos-lto",
-        "linux-firmware",
-        "nvidia",
-        "nvidia-open",
-        "nvidia-lts",
-        "nvidia-utils",
-        "nvidia-dkms",
-        "mesa",
-        "vulkan-radeon",
-        "vulkan-intel",
-        "systemd",
-        "systemd-libs",
-        "glibc",
-        "cryptsetup",
-        "mkinitcpio",
-        "dracut",
-        "grub",
-    }
-)
 
 
 def parse_package_update_line(line: str) -> tuple[str, str, str] | None:

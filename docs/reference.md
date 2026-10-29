@@ -159,8 +159,14 @@ The preview omits `--nosave`, which pacman does not allow with `--print-format`;
 this flag affects configuration-file handling during deletion, not the package set.
 
 Reboot detection (`sys.reboot`) compares the running kernel version with installed
-module directories without sudo. Kernel journal scanning has been removed from
-audits and upgrade preflight checks.
+module directories and checks explicit reboot markers. Pending official/AUR
+updates are reported as OLD without classifying package names as critical or
+claiming that a reboot is already required. After an update, confirmed reboot
+findings remain visible and the default flow can offer a reboot after other fixes.
+This check does not track every running application or its loaded libraries.
+
+The kernel comparison reads module directories without sudo. Kernel journal
+scanning has been removed from audits and upgrade preflight checks.
 
 Backups are **not configured automatically**. Monitoring is opt-in: without a
 configured adapter, `sys.backup` is omitted from audits, fix mode and upgrade

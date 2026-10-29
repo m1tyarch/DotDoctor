@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from dotdoctor.cli.app import app
@@ -293,7 +294,8 @@ def test_root_chains_updates_and_fixes(monkeypatch) -> None:
     assert actions == ["upgrade", "fix"]
 
 
-def test_root_critical_update_warning(monkeypatch) -> None:
+@pytest.mark.parametrize("args", [[], ["--sysup"]])
+def test_root_does_not_infer_reboot_from_legacy_critical_metadata(monkeypatch, args) -> None:
     def fake_run(self, context, **kwargs):
         return ScanReport(
             profile="system",
@@ -301,7 +303,7 @@ def test_root_critical_update_warning(monkeypatch) -> None:
                 CheckResult(
                     check_id="sys.packages",
                     severity=Severity.OUTD,
-                    message="1 update available (reboot required: linux)",
+                    message="1 update available",
                     details={"critical": ["linux"], "packages": ["linux 6.10.1 -> 6.10.2"]},
                 )
             ],
@@ -312,11 +314,20 @@ def test_root_critical_update_warning(monkeypatch) -> None:
         "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
         fake_run,
     )
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.build_tasks",
+        lambda *a, **kw: [],
+    )
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemUpgradeService.run",
+        lambda *a, **kw: 0,
+    )
 
-    result = runner.invoke(app, [], input="n\n")
+    result = runner.invoke(app, args, input="n\n")
     assert result.exit_code == 0
-    assert "Note: Critical updates detected (linux) — reboot will be recommended." in result.stdout
-    assert "Update everything now?" in result.stdout
+    assert "Critical updates" not in result.stdout
+    assert "reboot will be recommended" not in result.stdout
+    assert ("Update everything now?" in result.stdout) is (not args)
 
 
 def test_root_verbose_shows_all_packages(monkeypatch) -> None:

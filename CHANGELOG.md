@@ -8,6 +8,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Remove package-name-based "critical update" labels and premature reboot claims
+  from official/AUR update checks and both CLI update flows. Reboot findings remain
+  based on installed/running kernel state or an explicit reboot marker.
 - Show post-update findings before offering fixes; omit the offer when the fresh
   report has no supported fixes. Correct orphan dry-run flags: pacman rejects
   combining `--nosave` with `--print-format`, so preview with `-Rs` and retain
