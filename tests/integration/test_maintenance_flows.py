@@ -169,6 +169,64 @@ def test_news_accepted_saved_once_and_upgrade_continues(monkeypatch, environment
     assert any("-Syu" in command for command in environment)
 
 
+@pytest.mark.parametrize("mode", [[], ["--fix"]])
+@pytest.mark.parametrize("recorded_success", [True, False])
+def test_trim_completed_or_unknown_history_does_not_prompt_for_repairs(
+    monkeypatch, environment, tmp_path, mode, recorded_success
+):
+    now = 1_800_000_000
+    original_build = s.SystemDryRunService.build_tasks
+
+    def build(self, context, disabled_checks=None, include_checks=None):
+        return original_build(
+            self, context, disabled_checks=disabled_checks, include_checks=frozenset({"sys.trim"})
+        )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("A successful or unverified TRIM must not prompt or run repairs")
+
+    monkeypatch.setattr(s.SystemDryRunService, "build_tasks", build)
+    monkeypatch.setattr(
+        s.shutil, "which", lambda name: f"/bin/{name}" if name in {"lsblk", "systemctl"} else None
+    )
+    monkeypatch.setattr(
+        m, "read_json", lambda *a: {"blockdevices": [{"disc-max": 100, "mountpoints": ["/"]}]}
+    )
+    monkeypatch.setattr(m, "mounted_filesystems", lambda: [{"target": "/", "options": "rw"}])
+    monkeypatch.setattr(
+        m,
+        "properties",
+        lambda unit, scope="system", timer=False: (
+            {"ActiveState": "active"}
+            if timer
+            else {
+                "ActiveState": "inactive",
+                "Result": "success",
+                "ExecMainStatus": "0",
+                "ExecMainExitTimestamp": "",
+            }
+        ),
+    )
+    monkeypatch.setattr(m.time, "time", lambda: now)
+    monkeypatch.setattr(
+        m, "service_completion_timestamp", lambda *a: now - 3600 if recorded_success else None
+    )
+    monkeypatch.setattr(s.typer, "confirm", forbidden)
+    monkeypatch.setattr(InteractiveAutoFixer, "apply", forbidden)
+    monkeypatch.setattr("dotdoctor.cli.app.load_config", lambda *a: DotDoctorConfig())
+    report_path = tmp_path / "trim.json"
+    result = CliRunner().invoke(app, [*mode, "--json-output", str(report_path)])
+    assert result.exit_code == 0, result.output
+    assert "WARN" not in result.output and "FAIL" not in result.output
+    assert "Apply fixes" not in result.output
+    assert "fstrim.service" not in result.output
+    report = ScanReport.model_validate(json.loads(report_path.read_text()))
+    trim = report.get_result("sys.trim")
+    assert trim.severity == (Severity.PASS if recorded_success else Severity.SKIP)
+    assert trim.details["verified"] is recorded_success
+    assert environment == []
+
+
 def test_unavailable_news_requires_explicit_override(monkeypatch, environment, context):
     monkeypatch.setattr(
         m.MaintenanceChecks, "run", lambda self, context, ids: [finding("sys.news", verified=False)]

@@ -8,6 +8,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Recover successful TRIM runs from trusted systemd journal events when the
+  inactive service loses its exit timestamp. Missing history and running/skipped
+  jobs stay neutral with no repair offer; real failures and inactive timers
+  retain specific warnings. Allow one day of grace around the weekly schedule.
 - Remove package-name-based "critical update" labels and premature reboot claims
   from official/AUR update checks and both CLI update flows. Reboot findings remain
   based on installed/running kernel state or an explicit reboot marker.

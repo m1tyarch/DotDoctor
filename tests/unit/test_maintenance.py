@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from rich.console import Console
 
 from dotdoctor.application import maintenance as m
 from dotdoctor.domain.config import BackupConfig, DotDoctorConfig, MaintenanceConfig, TimerConfig
@@ -530,13 +531,197 @@ def test_trim_uses_last_success_and_handles_never_run(monkeypatch, completion):
     monkeypatch.setattr(m, "mounted_filesystems", lambda: [{"target": "/", "options": "rw"}])
 
     def props(unit, **kwargs):
-        return {**healthy_service(), "ActiveState": "active", "ExecMainExitTimestamp": completion}
+        if unit.endswith(".timer"):
+            return {"ActiveState": "active"}
+        return {**healthy_service(), "ExecMainExitTimestamp": completion}
 
     monkeypatch.setattr(m, "properties", props)
     result = m.MaintenanceChecks().trim()
-    assert result.severity == (Severity.PASS if completion == RECENT else Severity.WARN)
-    if completion != RECENT:
+    expected = {RECENT: Severity.PASS, OLD: Severity.WARN, "": Severity.SKIP}
+    assert result.severity == expected[completion]
+    if completion == OLD:
         assert result.details["actionable"] is True
+    elif completion == "":
+        assert result.details["actionable"] is False
+
+
+@pytest.fixture
+def trim_environment(monkeypatch):
+    from dotdoctor.application.auto_fix import InteractiveAutoFixer
+
+    timer = {"ActiveState": "active", "LastTriggerUSec": RECENT}
+    # Real systemd output after the inactive oneshot has lost its exit timestamp.
+    service = {**healthy_service(), "ExecMainExitTimestamp": ""}
+    state = SimpleNamespace(
+        timer=timer, service=service, completion=NOW - 86400, journal_calls=[], journal_error=None
+    )
+    monkeypatch.setattr(
+        m, "read_json", lambda *a: {"blockdevices": [{"disc-max": 100, "mountpoints": ["/"]}]}
+    )
+    monkeypatch.setattr(m, "mounted_filesystems", lambda: [{"target": "/", "options": "rw"}])
+    monkeypatch.setattr(m, "properties", lambda unit, **kw: timer if kw.get("timer") else service)
+
+    def completion(unit, scope="system"):
+        state.journal_calls.append((unit, scope))
+        if state.journal_error is not None:
+            raise state.journal_error
+        return state.completion
+
+    monkeypatch.setattr(m, "service_completion_timestamp", completion)
+    state.can_fix = lambda result: InteractiveAutoFixer(Console()).can_fix(result)
+    return state
+
+
+def test_trim_recovers_success_from_journal_after_systemd_discards_timestamp(trim_environment):
+    env = trim_environment
+    result = m.MaintenanceChecks().trim()
+    assert result.severity == Severity.PASS
+    assert result.message == "periodic TRIM succeeded 1.0 days ago"
+    assert result.details["verified"] is True
+    assert result.details["completion_source"] == "journal"
+    assert env.journal_calls == [("fstrim.service", "system")]
+    assert not env.can_fix(result)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [None, PermissionError("denied"), ValueError("invalid journal"), subprocess.SubprocessError()],
+)
+def test_trim_unknown_history_is_neutral_and_cannot_offer_a_fix(trim_environment, error):
+    env = trim_environment
+    env.completion = None
+    env.journal_error = error
+    result = m.MaintenanceChecks().trim()
+    assert result.severity == Severity.SKIP
+    assert result.details["verified"] is False
+    assert result.details["actionable"] is False
+    assert result.remediation is None
+    assert not env.can_fix(result)
+
+
+@pytest.mark.parametrize("state", ["active", "activating", "deactivating"])
+def test_trim_running_job_does_not_offer_to_run_again(trim_environment, state):
+    env = trim_environment
+    env.service["ActiveState"] = state
+    result = m.MaintenanceChecks().trim()
+    assert result.severity == Severity.SKIP
+    assert "in progress" in result.message
+    assert not env.can_fix(result)
+    assert env.journal_calls == []
+
+
+@pytest.mark.parametrize("state", ["inactive", "failed"])
+def test_trim_inactive_or_failed_timer_is_an_actionable_finding(trim_environment, state):
+    env = trim_environment
+    env.timer["ActiveState"] = state
+    result = m.MaintenanceChecks().trim()
+    assert result.severity == Severity.WARN
+    assert f"timer is {state}" in result.message
+    assert env.can_fix(result)
+
+
+@pytest.mark.parametrize(
+    "field,value", [("Result", "exit-code"), ("ExecMainStatus", "1"), ("ActiveState", "failed")]
+)
+def test_trim_current_service_failure_remains_actionable(trim_environment, field, value):
+    env = trim_environment
+    env.service[field] = value
+    result = m.MaintenanceChecks().trim()
+    assert result.severity == Severity.WARN
+    assert "last TRIM job failed" in result.message
+    assert env.can_fix(result)
+    assert env.journal_calls == []
+
+
+def test_trim_journal_failure_is_not_hidden_by_default_success_properties(trim_environment):
+    env = trim_environment
+    env.journal_error = readers.ServiceJobFailed("last recorded service job failed")
+    result = m.MaintenanceChecks().trim()
+    assert result.severity == Severity.WARN
+    assert result.message == "last recorded TRIM job failed"
+    assert env.can_fix(result)
+
+
+@pytest.mark.parametrize(
+    "field,expected", [("Condition", Severity.SKIP), ("Assert", Severity.WARN)]
+)
+def test_trim_skipped_or_asserted_job_does_not_offer_to_run_again(
+    trim_environment, field, expected
+):
+    env = trim_environment
+    env.service.update({f"{field}Result": "no", f"{field}Timestamp": RECENT})
+    result = m.MaintenanceChecks().trim()
+    assert result.severity == expected
+    assert not env.can_fix(result)
+    assert env.journal_calls == []
+
+
+def test_trim_default_condition_values_do_not_hide_a_journal_success(trim_environment):
+    env = trim_environment
+    env.service.update(
+        {
+            "ConditionResult": "no",
+            "ConditionTimestamp": "",
+            "AssertResult": "no",
+            "AssertTimestamp": "",
+        }
+    )
+    assert m.MaintenanceChecks().trim().severity == Severity.PASS
+    assert env.journal_calls == [("fstrim.service", "system")]
+
+
+def test_trim_latest_trigger_without_completion_cannot_use_an_older_success(trim_environment):
+    env = trim_environment
+    env.timer["LastTriggerUSec"] = NOW - 60
+    result = m.MaintenanceChecks().trim()
+    assert result.severity == Severity.SKIP
+    assert result.message == "latest scheduled TRIM has no verified completion"
+    assert not env.can_fix(result)
+
+
+@pytest.mark.parametrize("source", ["systemd", "journal"])
+@pytest.mark.parametrize(
+    "age,expected",
+    [(7.0, Severity.PASS), (7.1, Severity.PASS), (8.0, Severity.PASS), (8.1, Severity.WARN)],
+)
+def test_trim_weekly_schedule_has_grace_but_overdue_success_warns(
+    trim_environment, source, age, expected
+):
+    env = trim_environment
+    env.timer["LastTriggerUSec"] = ""
+    env.completion = NOW - age * 86400
+    if source == "systemd":
+        env.service["ExecMainExitTimestamp"] = datetime.fromtimestamp(
+            env.completion, UTC
+        ).isoformat()
+    result = m.MaintenanceChecks().trim()
+    assert result.severity == expected
+    assert result.details["verified"] is True
+    assert result.details["completion_source"] == source
+    assert env.can_fix(result) is (expected == Severity.WARN)
+
+
+def test_trim_invalid_future_history_is_not_a_failure_or_an_invented_pass(trim_environment):
+    env = trim_environment
+    env.completion = NOW + 86400
+    result = m.MaintenanceChecks().trim()
+    assert result.severity == Severity.SKIP
+    assert not env.can_fix(result)
+
+
+@pytest.mark.parametrize("unit", ["fstrim.timer", "fstrim.service"])
+def test_trim_unavailable_systemd_reader_does_not_offer_repair(monkeypatch, trim_environment, unit):
+    env = trim_environment
+
+    def props(name, **kwargs):
+        if name == unit:
+            raise ValueError("manager unavailable")
+        return env.timer
+
+    monkeypatch.setattr(m, "properties", props)
+    result = m.MaintenanceChecks().trim()
+    assert result.severity == Severity.SKIP
+    assert not env.can_fix(result)
 
 
 def test_news_acknowledgement_persists_only_reviewed_links(monkeypatch, tmp_path):

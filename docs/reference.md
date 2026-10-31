@@ -114,6 +114,16 @@ an explicit coverage override. Separate upgrade guards for connectivity and
 root/boot disk space still run. Disabling a package-manager audit does not omit
 that package manager's update transaction.
 
+`sys.trim` accepts continuous discard, or verifies the last successful periodic
+TRIM using systemd service properties and trusted manager events in the journal.
+An inactive `fstrim.service` is normal after a completed run; its missing exit
+timestamp alone is not a warning. Missing/unreadable history, skipped jobs and
+executions in progress produce neutral SKIP with no automatic repair offer.
+Known job failures and inactive/failed timers produce WARN with the specific
+reason. A verified success older than eight days is overdue: the weekly schedule
+has one day of grace for randomized delay and scheduling accuracy. An older
+success cannot hide a newer timer trigger with no verified completion.
+
 `sys.security` reads installed-package advisories through
 [arch-audit](https://man.archlinux.org/man/arch-audit.1.en). Packages reported below
 an advisory's fixed version produce FAIL. Entries with no fixed-version data

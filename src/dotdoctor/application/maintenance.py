@@ -39,6 +39,8 @@ PREFLIGHT_IDS = frozenset(
     }
 )
 POSTFLIGHT_IDS = frozenset({"sys.security", "sys.rebuild", "sys.integrity", "sys.package-db"})
+# Weekly timer plus randomized delay, scheduling accuracy and a day of grace.
+TRIM_MAX_AGE_DAYS = 8
 
 
 def _result(
@@ -424,23 +426,105 @@ class MaintenanceChecks:
         }
         if mounts.issubset(continuous):
             return _result(cid, Severity.PASS, "continuous discard enabled on applicable mounts")
-        timer = properties("fstrim.timer", timer=True)
-        service = properties("fstrim.service")
-        healthy = service_succeeded(service)
-        try:
-            age = _age_days(service.get("ExecMainExitTimestamp", "")) if healthy else None
-        except ValueError:
-            age = None
-        if timer.get("ActiveState") != "active" or age is None or age > 7:
+
+        def unverified(reason: str) -> CheckResult:
+            return _result(
+                cid,
+                Severity.SKIP,
+                reason,
+                verified=False,
+                actionable=False,
+                mounts=sorted(mounts - continuous),
+            )
+
+        def finding(reason: str, **details: Any) -> CheckResult:
             return _result(
                 cid,
                 Severity.WARN,
-                "periodic TRIM is inactive, failed, or overdue",
+                reason,
                 "sudo systemctl enable --now fstrim.timer && sudo systemctl start fstrim.service",
                 actionable=True,
                 mounts=sorted(mounts - continuous),
+                **details,
             )
-        return _result(cid, Severity.PASS, f"periodic TRIM succeeded {age:.1f} days ago")
+
+        try:
+            timer = properties("fstrim.timer", timer=True)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            return unverified(f"TRIM schedule could not be verified: {exc}")
+        if timer.get("ActiveState") in {"inactive", "failed"}:
+            return finding(f"periodic TRIM timer is {timer['ActiveState']}")
+        if timer.get("ActiveState") != "active":
+            return unverified("periodic TRIM timer state is not verified")
+
+        try:
+            service = properties("fstrim.service")
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            return unverified(f"TRIM service could not be verified: {exc}")
+        if service.get("ActiveState") in {"active", "activating", "deactivating"}:
+            return unverified("TRIM execution is in progress")
+        if (
+            service.get("ActiveState") == "failed"
+            or service.get("Result") not in {None, "success"}
+            or service.get("ExecMainStatus") not in {None, "0"}
+        ):
+            return finding(
+                "last TRIM job failed "
+                f"(Result={service.get('Result', 'unknown')}, "
+                f"exit={service.get('ExecMainStatus', 'unknown')})"
+            )
+        if service.get("AssertResult") == "no" and service.get("AssertTimestamp", "") not in {
+            "",
+            "n/a",
+            "0",
+        }:
+            return _result(
+                cid,
+                Severity.WARN,
+                "TRIM service assertion failed; job did not run",
+                "systemctl status fstrim.service",
+                actionable=False,
+            )
+        if service.get("ConditionResult") == "no" and service.get("ConditionTimestamp", "") not in {
+            "",
+            "n/a",
+            "0",
+        }:
+            return unverified("TRIM job was skipped by its execution conditions")
+
+        completed: float | None
+        try:
+            completed_value = service.get("ExecMainExitTimestamp", "")
+            if completed_value not in {"", "n/a", "0"}:
+                if not service_succeeded(service):
+                    return unverified("last TRIM job success is not verified")
+                completed = timestamp(completed_value)
+                source = "systemd"
+            elif service.get("ActiveState") == "inactive":
+                completed = service_completion_timestamp("fstrim.service")
+                source = "journal"
+            else:
+                return unverified("TRIM service state is not verified")
+            if completed is None:
+                return unverified("TRIM completion history is unavailable")
+            triggered = timer.get("LastTriggerUSec", "")
+            if triggered not in {"", "n/a", "0"} and timestamp(triggered) > completed:
+                return unverified("latest scheduled TRIM has no verified completion")
+            age = _age_days(completed)
+        except ServiceJobFailed:
+            return finding("last recorded TRIM job failed")
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            return unverified(f"TRIM completion history could not be verified: {exc}")
+        details: dict[str, Any] = {
+            "verified": True,
+            "last_success": completed,
+            "age_days": age,
+            "completion_source": source,
+            "max_age_days": TRIM_MAX_AGE_DAYS,
+        }
+        if age > TRIM_MAX_AGE_DAYS:
+            return finding(f"last verified TRIM was {age:.1f} days ago", **details)
+        return _result(cid, Severity.PASS, f"periodic TRIM succeeded {age:.1f} days ago", **details)
 
     def smart(self) -> CheckResult:
         cid = "sys.smart"
