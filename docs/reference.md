@@ -311,6 +311,15 @@ it prints any warnings and exits without running the upgrade sequence. Package
 transactions currently use noninteractive confirmation flags; read the audit
 findings before starting an upgrade.
 
+After accepting the default audit's update offer, sudo authentication is the first
+operation in the upgrade sequence. Connectivity, disk capacity and maintenance
+preflight checks run after authentication and before snapshots, mirrors or package
+transactions. Storage readers use the cached credentials in that single preflight
+pass. Password entry inherits the terminal with no live progress display around it;
+failed or timed-out authentication stops the sequence with exit code 3.
+After authentication, transient progress identifies connectivity, disk and
+maintenance checks. It closes before displaying findings or asking for news review.
+
 DotDoctor selects commands for each package manager:
 
 | Manager | Full upgrade | Confirmed rebuild |
@@ -349,8 +358,8 @@ transactions and interactive fixes use their existing execution paths.
   signature/trust failure gets one keyring recovery attempt. Signature verification
   is never disabled. A synchronized package database is followed immediately by
   `pacman -Su`; failures stop the remaining workflow.
-- Read-only privileged checks use `sudo -n` and never prompt for a password. Storage
-  checks run again after sudo credentials are cached, before any upgrade transaction.
+- Read-only privileged checks use `sudo -n` and never prompt for a password. Upgrade
+  preflight checks run with sudo credentials already cached, before any transaction.
 - Missing package files, database consistency, vulnerabilities, and rebuild findings are
   checked again after updating. A confirmed rebuild is checked again afterward.
 

@@ -499,13 +499,15 @@ def test_inaccessible_configuration_tree_is_not_clean(monkeypatch, context):
     assert report.results[0].details["verified"] is False
 
 
-def test_unknown_disk_capacity_blocks_upgrade_before_any_commands(monkeypatch, context):
+def test_unknown_disk_capacity_blocks_upgrade_after_authentication(monkeypatch, context):
     def unavailable():
         raise OSError("boot capacity unavailable")
 
     monkeypatch.setattr(s, "detect_disk_space_status", unavailable)
 
-    def forbidden(*args, **kwargs):
+    def forbidden(command, **kwargs):
+        if command == ["sudo", "-v"]:
+            return SimpleNamespace(returncode=0)
         raise AssertionError("An unverified disk must block the transaction")
 
     monkeypatch.setattr(s.subprocess, "run", forbidden)

@@ -8,6 +8,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Request sudo authentication immediately when an upgrade starts. Run connectivity,
+  disk and maintenance guards afterward, before any system changes, and check
+  privileged storage readers once with cached credentials. Authentication failures
+  and timeouts stop before checks or transactions.
 - Recover successful TRIM runs from trusted systemd journal events when the
   inactive service loses its exit timestamp. Missing history and running/skipped
   jobs stay neutral with no repair offer; real failures and inactive timers

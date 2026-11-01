@@ -9,8 +9,9 @@ import sys
 import textwrap
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,7 @@ from rich.live import Live
 from rich.markup import escape
 from rich.spinner import Spinner
 from rich.table import Table
+from rich.text import Text
 
 from dotdoctor.application.maintenance import (
     PACKAGE_RE,
@@ -1474,7 +1476,24 @@ class SystemUpgradeService:
         self._keyring_updated = False
 
     def run(self, context: ScanContext, console: Console) -> int:
-        if not self._is_online_fn():
+        # Authentication is the first operation after upgrade confirmation.
+        # All guards still run before snapshots or package/system mutations.
+        console.print("  [dim]Caching sudo credentials[/dim]")
+        try:
+            sudo_cache = subprocess.run(["sudo", "-v"], check=False, timeout=120)
+        except subprocess.TimeoutExpired:
+            console.print("[red]Sudo authentication timed out. Aborting update phase.[/red]")
+            return 3
+        except (OSError, subprocess.SubprocessError) as exc:
+            console.print(f"[red]Could not authenticate sudo: {escape(str(exc))}[/red]")
+            return 3
+        if sudo_cache.returncode != 0:
+            console.print("[red]Failed to cache sudo credentials. Aborting update phase.[/red]")
+            return 3
+
+        with self._preflight_progress(console, "Checking internet connection"):
+            online = self._is_online_fn()
+        if not online:
             console.print(
                 "[red]FAIL: HTTPS connectivity checks failed. "
                 "Check connection, DNS and proxy settings. "
@@ -1483,7 +1502,8 @@ class SystemUpgradeService:
             return 1
 
         try:
-            disk_status = detect_disk_space_status()
+            with self._preflight_progress(console, "Checking disk space"):
+                disk_status = detect_disk_space_status()
         except OSError as exc:
             for line in format_status_line(STATUS_FAIL, f"Update aborted: {exc}"):
                 console.print(line)
@@ -1500,17 +1520,6 @@ class SystemUpgradeService:
             )
 
         if not self._maintenance_preflight(context, console):
-            return 2
-
-        console.print("  [dim]Caching sudo credentials[/dim]")
-        sudo_cache = subprocess.run(["sudo", "true"], check=False)
-        if sudo_cache.returncode != 0:
-            console.print("[red]Failed to cache sudo credentials. Aborting update phase.[/red]")
-            return 3
-
-        # Recheck privileged readers once sudo is cached; an unprivileged WARN
-        # must not conceal a disk failure before the package transaction.
-        if not self._maintenance_preflight(context, console, frozenset({"sys.smart", "sys.btrfs"})):
             return 2
 
         had_error = False
@@ -1831,10 +1840,37 @@ class SystemUpgradeService:
             )
         return 2 if had_error else 0
 
+    @staticmethod
+    @contextmanager
+    def _preflight_progress(console: Console, label: str) -> Iterator[None]:
+        animated = (
+            bool(getattr(console, "is_terminal", False))
+            and not getattr(console, "is_dumb_terminal", False)
+            and not any(
+                os.environ.get(flag)
+                for flag in ("NO_ANIMATION", "DOTDOCTOR_NO_ANIMATION", "NO_COLOR")
+            )
+        )
+        if not animated:
+            for line in format_status_line("", label):
+                line.stylize("dim")
+                console.print(line)
+            yield
+            return
+        grid = Table.grid(expand=False)
+        grid.add_column()
+        grid.add_column(width=STATUS_WIDTH)
+        grid.add_column()
+        grid.add_column()
+        grid.add_row(INDENT, Spinner("dots"), GAP, Text(label, style="dim"))
+        with Live(grid, console=console, transient=True, refresh_per_second=10):
+            yield
+
     def _maintenance_preflight(
         self, context: ScanContext, console: Console, ids: frozenset[str] = PREFLIGHT_IDS
     ) -> bool:
-        checks = MaintenanceChecks(self.config).run(context, ids)
+        with self._preflight_progress(console, "Checking update prerequisites"):
+            checks = MaintenanceChecks(self.config).run(context, ids)
         has_blocking = any(r.details.get("blocks_upgrade") for r in checks)
         for result in checks:
             if result.severity in {Severity.PASS, Severity.SKIP}:

@@ -96,7 +96,7 @@ def test_blocking_preflight_never_starts_a_transaction(monkeypatch, environment,
         m.MaintenanceChecks, "run", lambda self, context, ids: [finding(cid, blocks_upgrade=True)]
     )
     assert upgrade().run(context, Console(file=io.StringIO())) == 2
-    assert environment == []
+    assert environment == [["sudo", "-v"]]
 
 
 def test_blocking_preflight_prints_items_fix_and_abort_message(monkeypatch, environment, context):
@@ -122,15 +122,18 @@ def test_blocking_preflight_prints_items_fix_and_abort_message(monkeypatch, envi
     assert "Upgrade aborted — critical preflight check 'sys.mounts' failed." in out
 
 
-def test_smart_rechecked_after_sudo_before_snapshot(monkeypatch, environment, context):
+def test_smart_checked_after_sudo_before_snapshot(monkeypatch, environment, context):
+    calls = []
+
     def checks(self, context, ids):
-        if ids == m.PREFLIGHT_IDS:
-            return [finding("sys.smart", verified=False)]
+        calls.append(ids)
+        assert environment == [["sudo", "-v"]]
         return [finding("sys.smart", Severity.FAIL, blocks_upgrade=True)]
 
     monkeypatch.setattr(m.MaintenanceChecks, "run", checks)
     assert upgrade().run(context, Console(file=io.StringIO())) == 2
-    assert environment == [["sudo", "true"]]
+    assert environment == [["sudo", "-v"]]
+    assert calls == [m.PREFLIGHT_IDS]
 
 
 def test_news_decline_does_not_save_ack_or_start_upgrade(monkeypatch, environment, context):
@@ -143,7 +146,7 @@ def test_news_decline_does_not_save_ack_or_start_upgrade(monkeypatch, environmen
     monkeypatch.setattr(s.typer, "confirm", lambda *args, **kwargs: False)
     assert upgrade().run(context, Console(file=io.StringIO())) == 2
     assert not readers.MaintenanceState().path.exists()
-    assert environment == []
+    assert environment == [["sudo", "-v"]]
 
 
 def test_news_accepted_saved_once_and_upgrade_continues(monkeypatch, environment, context):
@@ -233,7 +236,7 @@ def test_unavailable_news_requires_explicit_override(monkeypatch, environment, c
     )
     monkeypatch.setattr(s.typer, "confirm", lambda *args, **kwargs: False)
     assert upgrade().run(context, Console(file=io.StringIO())) == 2
-    assert environment == []
+    assert environment == [["sudo", "-v"]]
 
 
 def test_failed_snapshot_stops_before_mirrors_and_packages(monkeypatch, environment, context):
@@ -249,7 +252,7 @@ def test_failed_snapshot_stops_before_mirrors_and_packages(monkeypatch, environm
     assert service.run(context, Console(file=io.StringIO())) == 2
     assert len(steps) == 1
     assert steps[0][:3] == ["sudo", "snapper", "create"]
-    assert environment == [["sudo", "true"]]
+    assert environment == [["sudo", "-v"]]
 
 
 @pytest.mark.parametrize("fail_second", [False, True])

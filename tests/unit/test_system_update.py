@@ -313,7 +313,7 @@ def test_system_upgrade_runs_steps_and_reports_success(monkeypatch, tmp_path: Pa
     code = service.run(_context(tmp_path), console)
 
     assert code == 0
-    assert ["sudo", "true"] in commands
+    assert ["sudo", "-v"] in commands
     assert ["sudo", "cachyos-rate-mirrors"] in commands
     assert [
         "yay",
@@ -403,7 +403,7 @@ def test_system_upgrade_network_failure_triggers_mirror_recovery(
     def fake_run(*args, **kwargs):
         command = args[0]
         commands.append(command)
-        if command == ["sudo", "true"]:
+        if command == ["sudo", "-v"]:
             return SimpleNamespace(returncode=0, stderr="")
         if command == ["sudo", "cachyos-rate-mirrors"]:
             return SimpleNamespace(returncode=0, stderr="")
@@ -448,7 +448,7 @@ def test_system_upgrade_fatal_network_error_returns_exit_one(monkeypatch, tmp_pa
 
     def fake_run(*args, **kwargs):
         command = args[0]
-        if command == ["sudo", "true"]:
+        if command == ["sudo", "-v"]:
             return SimpleNamespace(returncode=0, stderr="")
         if command == ["sudo", "cachyos-rate-mirrors"]:
             return SimpleNamespace(returncode=0, stderr="")
@@ -617,6 +617,10 @@ def test_detect_disk_space_status_critical_fail(tmp_path: Path) -> None:
 def test_system_upgrade_aborts_on_critical_disk_space(monkeypatch, tmp_path: Path) -> None:
     service = SystemUpgradeService()
     console = DummyConsole()
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0),
+    )
 
     monkeypatch.setattr(
         "dotdoctor.application.system_update.detect_disk_space_status",
@@ -691,13 +695,22 @@ def test_system_dry_run_offline_skips_network_checks(monkeypatch, tmp_path: Path
     assert "sys.disk" in by_id
 
 
-def test_system_upgrade_offline_aborts_immediately(tmp_path: Path) -> None:
+def test_system_upgrade_offline_aborts_after_authentication(monkeypatch, tmp_path: Path) -> None:
     service = SystemUpgradeService(is_online_fn=lambda: False)
     console = DummyConsole()
+    commands = []
+
+    def authenticate(command, **kwargs):
+        commands.append(command)
+        assert command == ["sudo", "-v"]
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("dotdoctor.application.system_update.subprocess.run", authenticate)
 
     code = service.run(_context(tmp_path), console)
     assert code == 1
     assert any("HTTPS connectivity checks failed" in msg for msg in console.messages)
+    assert commands == [["sudo", "-v"]]
 
 
 def test_detect_aur_helper_prefers_paru_then_yay() -> None:
@@ -1017,7 +1030,7 @@ def test_system_upgrade_summary_counters_on_failure(
 
     def fake_run(*args, **kwargs):
         command = args[0]
-        if command == ["sudo", "true"]:
+        if command == ["sudo", "-v"]:
             return SimpleNamespace(returncode=0, stderr="", stdout="")
         if command[:1] == ["yay"]:
             return SimpleNamespace(returncode=1, stderr="fatal package conflict", stdout="")
@@ -1051,7 +1064,7 @@ def test_system_upgrade_with_actual_updates_applied(
 
     def fake_run(*args, **kwargs):
         command = args[0]
-        if command == ["sudo", "true"]:
+        if command == ["sudo", "-v"]:
             return SimpleNamespace(returncode=0, stderr="", stdout="")
         if command[:1] == ["yay"]:
             stdout = (
@@ -1207,7 +1220,7 @@ def test_system_upgrade_with_snapper_rollback_advice(monkeypatch, tmp_path: Path
 
     def fake_run(*args, **kwargs):
         cmd = args[0]
-        if cmd == ["sudo", "true"]:
+        if cmd == ["sudo", "-v"]:
             return SimpleNamespace(returncode=0, stderr="", stdout="")
         if cmd[:3] == ["sudo", "snapper", "create"]:
             return SimpleNamespace(returncode=0, stderr="", stdout="")
@@ -1239,7 +1252,7 @@ def test_system_upgrade_with_timeshift_rollback_advice(monkeypatch, tmp_path: Pa
 
     def fake_run(*args, **kwargs):
         cmd = args[0]
-        if cmd == ["sudo", "true"]:
+        if cmd == ["sudo", "-v"]:
             return SimpleNamespace(returncode=0, stderr="", stdout="")
         if cmd[:3] == ["sudo", "timeshift", "--create"]:
             return SimpleNamespace(returncode=0, stderr="", stdout="")
@@ -1269,7 +1282,7 @@ def test_system_upgrade_snapshot_creation_fails(monkeypatch, tmp_path: Path) -> 
 
     def fake_run(*args, **kwargs):
         cmd = args[0]
-        if cmd == ["sudo", "true"]:
+        if cmd == ["sudo", "-v"]:
             return SimpleNamespace(returncode=0, stderr="", stdout="")
         if cmd[:3] == ["sudo", "snapper", "create"]:
             return SimpleNamespace(returncode=1, stderr="no space left", stdout="")
