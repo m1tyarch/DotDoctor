@@ -14,7 +14,7 @@
 </div>
 
 A clear view of what needs attention, before you change anything.
-DotDoctor brings system checks, updates, and maintenance into one small Linux CLI.
+DotDoctor brings system checks, updates, and maintenance into one small Linux CLI tool.
 Checks run in parallel. In an interactive terminal, each result appears as soon
 as it is ready.
 
