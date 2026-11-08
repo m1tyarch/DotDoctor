@@ -17,7 +17,7 @@ Get a clear view of what needs attention before making any changes.
 DotDoctor brings system health checks, safe updates, and routine maintenance into a single, lightweight Linux CLI.
 Checks run in parallel, and results appear in your terminal the moment they are ready.
 
-https://github.com/user-attachments/assets/8c189cbe-6875-4bc1-9f10-de9176c14795
+https://github.com/user-attachments/assets/8a176002-5070-47a3-a2e8-a789da28a998
 
 <sub>Illustrative report. Checks depend on your installed tools and configuration.</sub>
 
