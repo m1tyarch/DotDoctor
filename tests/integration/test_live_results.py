@@ -52,11 +52,9 @@ def test_live_result_arrives_while_another_check_is_pending(
         def __init__(self, grid, **kwargs):
             assert kwargs["transient"] is True
             rows = snapshot(grid)
-            assert len(rows) == 4
-            assert "0%" in rows[0]
-            assert "(0/2)" in rows[0]
-            assert "sys.slow" in rows[2]
-            assert "sys.fast" in rows[3]
+            assert len(rows) == 2
+            assert "sys.slow" in rows[0]
+            assert "sys.fast" in rows[1]
 
         def __enter__(self):
             return self
@@ -69,22 +67,20 @@ def test_live_result_arrives_while_another_check_is_pending(
             rows = snapshot(grid)
             if not release_slow.is_set():
                 assert not slow_finished.is_set()
-                assert "50%" in rows[0]
-                assert "(1/2)" in rows[0]
                 if outcome == Severity.PASS:
-                    assert len(rows) == 3
-                    assert "sys.slow" in rows[2]
+                    assert len(rows) == 1
+                    assert "sys.slow" in rows[0]
                 else:
-                    assert len(rows) == 4
-                    assert "sys.slow" in rows[2]
-                    assert rows[3].startswith(f"  {status:<4}  sys.fast  ")
-                    assert "DONE" not in rows[3]
+                    assert len(rows) == 2
+                    assert "sys.slow" in rows[0]
+                    assert rows[1].startswith(f"  {status:<4}  sys.fast  ")
+                    assert "DONE" not in rows[1]
                     if isinstance(outcome, Severity):
-                        assert "finding" in rows[3]
+                        assert "finding" in rows[1]
                     elif isinstance(outcome, OSError):
-                        assert "check could" in rows[3]
+                        assert "check could" in rows[1]
                     else:
-                        assert "no result" in rows[3]
+                        assert "no result" in rows[1]
                 release_slow.set()
 
     monkeypatch.setattr("dotdoctor.cli.app.Live", Live)
@@ -118,20 +114,18 @@ def test_live_result_arrives_while_another_check_is_pending(
         Console(file=io.StringIO(), width=width, force_terminal=True),
     )
     assert len(snapshots) == 3
-    assert "100%" in snapshots[-1][0]
-    assert "(2/2)" in snapshots[-1][0]
     if outcome == Severity.PASS:
-        assert len(snapshots[-1]) == 1
+        assert len(snapshots[-1]) == 0
     else:
-        assert len(snapshots[-1]) == 3
-        assert snapshots[-1][2].startswith(f"  {status:<4}  sys.fast  ")
+        assert len(snapshots[-1]) == 1
+        assert snapshots[-1][0].startswith(f"  {status:<4}  sys.fast  ")
 
     assert [result.check_id for result in report.results] == (
         ["sys.slow"] if outcome is None else ["sys.slow", "sys.fast"]
     )
     if isinstance(outcome, Severity) and width == 80 and outcome != Severity.PASS:
-        assert "[red]literal[/red]" in snapshots[1][3]
-        assert "…" in snapshots[1][3]
+        assert "[red]literal[/red]" in snapshots[1][1]
+        assert "…" in snapshots[1][1]
 
 
 def test_live_result_with_show_all_keeps_passed_checks(monkeypatch, context):
@@ -187,14 +181,11 @@ def test_live_result_with_show_all_keeps_passed_checks(monkeypatch, context):
         show_all=True,
     )
     assert len(snapshots) == 3
-    assert len(snapshots[0]) == 4
-    assert "0%" in snapshots[0][0]
-    assert len(snapshots[1]) == 4
-    assert "50%" in snapshots[1][0]
-    assert snapshots[1][3].startswith("  PASS  sys.fast  fast ok")
-    assert len(snapshots[2]) == 4
-    assert "100%" in snapshots[2][0]
-    assert snapshots[2][2].startswith("  PASS  sys.slow  slow ok")
+    assert len(snapshots[0]) == 2
+    assert len(snapshots[1]) == 2
+    assert snapshots[1][1].startswith("  PASS  sys.fast  fast ok")
+    assert len(snapshots[2]) == 2
+    assert snapshots[2][0].startswith("  PASS  sys.slow  slow ok")
     assert [r.check_id for r in report.results] == ["sys.slow", "sys.fast"]
 
 

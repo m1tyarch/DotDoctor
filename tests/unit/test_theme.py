@@ -19,7 +19,6 @@ from dotdoctor.cli.theme import (
     STYLE_FAIL,
     STYLE_OLD,
     format_header,
-    format_progress_bar,
     format_status_line,
     format_sysup_summary,
 )
@@ -152,27 +151,3 @@ def test_no_ansi_when_no_color() -> None:
     assert "DotDoctor · system update" in rendered
     assert "DONE  Pacman cache cleanup (keep 2 versions)" in rendered
     assert "6 done · 1 failed · 2 skipped" in rendered
-
-
-def test_format_progress_bar() -> None:
-    # 0%
-    bar_0 = format_progress_bar(0, 10, width=20)
-    assert bar_0.plain.startswith("    0%  [")
-    assert "(0/10)" in bar_0.plain
-    assert "=" not in bar_0.plain
-
-    # 50%
-    bar_50 = format_progress_bar(5, 10, width=20)
-    assert bar_50.plain.startswith("   50%  [")
-    assert "(5/10)" in bar_50.plain
-    assert ">" in bar_50.plain
-
-    # 100%
-    bar_100 = format_progress_bar(10, 10, width=20)
-    assert bar_100.plain.startswith("  100%  [")
-    assert "(10/10)" in bar_100.plain
-    assert " " not in bar_100.plain.split("[")[1].split("]")[0]
-
-    # total <= 0 handles gracefully
-    bar_empty = format_progress_bar(0, 0, width=20)
-    assert bar_empty.plain.startswith("  100%  [")

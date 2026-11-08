@@ -4,7 +4,7 @@ from typing import Any
 
 import typer
 import typer.rich_utils
-from rich.console import Console, Group
+from rich.console import Console
 from rich.live import Live
 from rich.spinner import Spinner
 from rich.table import Table
@@ -28,7 +28,6 @@ from dotdoctor.cli.theme import (
     STATUS_WIDTH,
     STYLE_SKIP,
     format_header,
-    format_progress_bar,
 )
 from dotdoctor.domain.context import ScanContext
 from dotdoctor.domain.models import CheckResult, ScanReport, Severity
@@ -174,14 +173,8 @@ def _run_tasks_with_progress(
     results: dict[str, CheckResult | None] = {}
     spinners = {task.check_id: Spinner("dots") for task in tasks}
     id_width = max((len(task.check_id) for task in tasks), default=0)
-    total_count = len(tasks)
-    console_width = console.width if console and console.width else 80
-    bar_width = max(10, min(32, console_width - 25))
 
-    def _build_display() -> Group:
-        completed_count = sum(1 for task in tasks if task.check_id in results)
-        progress_bar = format_progress_bar(completed_count, total_count, width=bar_width)
-
+    def _build_steps_table() -> Table:
         grid = Table.grid(expand=True, padding=0)
         grid.add_column(width=len(INDENT))
         grid.add_column(width=STATUS_WIDTH, no_wrap=True)
@@ -207,10 +200,7 @@ def _run_tasks_with_progress(
                 st_renderable = spinners[task.check_id]
                 message = Text(" ".join(task.label.split()))
             grid.add_row(INDENT, st_renderable, GAP, Text(task.check_id), GAP, message)
-
-        if grid.row_count > 0:
-            return Group(progress_bar, Text(""), grid)
-        return Group(progress_bar)
+        return grid
 
     is_interactive = (
         console.is_terminal
@@ -222,7 +212,7 @@ def _run_tasks_with_progress(
 
     if is_interactive:
         with Live(
-            _build_display(),
+            _build_steps_table(),
             console=console,
             transient=True,
             refresh_per_second=12.5,
@@ -230,7 +220,7 @@ def _run_tasks_with_progress(
 
             def _show_result(check_id: str, result: CheckResult | None) -> None:
                 results[check_id] = result
-                live.update(_build_display(), refresh=True)
+                live.update(_build_steps_table(), refresh=True)
 
             return service.run_with_progress(
                 context,
