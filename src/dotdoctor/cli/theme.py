@@ -52,6 +52,33 @@ def format_header(profile_or_mode: str) -> Text:
     return header
 
 
+def format_progress_bar(completed: int, total: int, width: int = 30) -> Text:
+    """Format Flatpak-style progress bar: '   42%  [===========>         ] (8/19)'."""
+    if total <= 0:
+        ratio = 1.0
+        pct = 100
+    else:
+        ratio = min(1.0, max(0.0, completed / total))
+        pct = int(ratio * 100)
+
+    filled = int(ratio * width)
+    pct_str = f"{pct:>3}%"
+
+    bar_text = Text(INDENT)
+    bar_text.append(pct_str.ljust(STATUS_WIDTH), style=STYLE_OLD)
+    bar_text.append(GAP)
+    bar_text.append("[", style=STYLE_MUTED)
+    if filled > 0:
+        body = "=" * (filled - 1) if filled < width else "=" * width
+        head = ">" if filled < width else ""
+        bar_text.append(f"{body}{head}", style=STYLE_OLD)
+    if width > filled:
+        bar_text.append(" " * (width - filled))
+    bar_text.append("]", style=STYLE_MUTED)
+    bar_text.append(f" ({completed}/{total})", style=STYLE_MUTED)
+    return bar_text
+
+
 def format_status_line(
     status: str,
     title: str,

@@ -30,6 +30,7 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Add dynamic Flatpak-style progress bar at the top of the terminal during interactive audits.
 - Filter out passed checks by default to keep diagnostic reports focused on actionable findings; dynamically hide passing items during live audits. Added `--all` (`-a`) option and `show_all` configuration to display all checks.
 - Show the complete pacman orphan-removal plan, package versions, additional
   dependencies and estimated space to free before confirmation. Revalidate after
