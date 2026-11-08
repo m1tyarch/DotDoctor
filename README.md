@@ -13,20 +13,11 @@
 
 </div>
 
-A clear view of what needs attention, before you change anything.
-DotDoctor brings system checks, updates, and maintenance into one small Linux CLI tool.
-Checks run in parallel. In an interactive terminal, each result appears as soon
-as it is ready.
-
-
-
-
+Get a clear view of what needs attention before making any changes.
+DotDoctor brings system health checks, safe updates, and routine maintenance into a single, lightweight Linux CLI.
+Checks run in parallel, and results appear in your terminal the moment they are ready.
 
 https://github.com/user-attachments/assets/8c189cbe-6875-4bc1-9f10-de9176c14795
-
-
-
-
 
 <sub>Illustrative report. Checks depend on your installed tools and configuration.</sub>
 
@@ -34,13 +25,19 @@ https://github.com/user-attachments/assets/8c189cbe-6875-4bc1-9f10-de9176c14795
 
 Requires Linux and Python **3.11 or newer**.
 
-The first pre-release is [v0.2.0-beta.1](https://github.com/m1tyarch/DotDoctor/releases/tag/v0.2.0-beta.1).
-Python packages and `dotdoctor version` identify it as `0.2.0b1`.
+The latest pre-release is [v0.2.0-beta.1](https://github.com/m1tyarch/DotDoctor/releases/tag/v0.2.0-beta.1) (identified as `0.2.0b1` by Python packaging).
 
-For a native Arch/CachyOS package, see [Arch packaging](packaging/aur/README.md).
-The AUR package is not published yet.
+### Option A: Local Arch Package (Recommended)
 
-Install the tagged release from source:
+Build and install natively via `makepkg` (see [Arch packaging](packaging/aur/README.md); AUR publication coming soon):
+
+```bash
+git clone https://github.com/m1tyarch/DotDoctor.git
+cd DotDoctor/packaging/aur/dotdoctor-git
+makepkg -si
+```
+
+### Option B: Install from source in a virtualenv
 
 ```bash
 git clone --branch v0.2.0-beta.1 --depth 1 https://github.com/m1tyarch/DotDoctor.git
@@ -51,29 +48,27 @@ python -m pip install -e .
 dotdoctor
 ```
 
-For later runs, activate the same environment or use `.venv/bin/dotdoctor` from
-the checkout. To work on the development version, clone the `main` branch instead;
-see [Contributing](CONTRIBUTING.md).
+For subsequent runs, activate the virtual environment or run `.venv/bin/dotdoctor`. To contribute or work on the development version, clone the `main` branch instead; see [Contributing](CONTRIBUTING.md).
 
 ## Use
 
 Start with `dotdoctor` whenever you want to see what needs attention.
-Choose an explicit mode when you already know the next step.
+Choose an explicit mode when you already know the next step:
 
 | Command | What happens |
 | :--- | :--- |
-| `dotdoctor` | Audit the system, then offer updates or supported fixes when relevant. |
+| `dotdoctor` | Audit the system in parallel, then offer updates or supported fixes when relevant. |
 | `dotdoctor --sysup` | Check update-related findings, then run the sequential update workflow when needed. |
-| `dotdoctor --fix` | Check system hygiene and ask before each supported action. |
+| `dotdoctor --fix` | Check system hygiene and prompt for confirmation before each supported action. |
 
-The audit does not install packages or start repairs. Its follow-up update/fix
-prompts default to **yes**; enter `n` to keep the run diagnostic. `--sysup` uses
+The audit does not install packages or start repairs. Follow-up update/fix
+prompts default to **yes**; enter `n` to keep the run diagnostic-only. `--sysup` runs
 noninteractive package transactions after its checks. A configured snapshot is
 created before updating; if snapshot creation fails, the update stops. Missing
 snapshot tooling is reported as `SKIP`.
 
-Use `-v` to expand findings, `--help` for options, and `dotdoctor version` for the
-installed version. During an audit, **Ctrl+C** stops the diagnostic processes
+Use `-a` / `--all` to show all checks including passed ones, `-v` to expand findings, `--help` for options, and `dotdoctor version` for the
+installed version. During an audit, **Ctrl+C** cleanly stops running diagnostic processes
 and restores your terminal.
 
 <details>
@@ -88,7 +83,7 @@ JSON export is available for the default and fix modes. JSON uses `OUTD` for
 terminal `OLD` and `SKIP` for neutral, unverified results.
 Disabling a package-manager check excludes its audit, not its
 update transaction. See [reporting and exit codes](docs/reference.md#exit-codes)
-for automation: warnings alone do not produce a nonzero scan exit code.
+for automation: warnings alone do not produce a nonzero exit code.
 
 </details>
 
@@ -96,29 +91,20 @@ for automation: warnings alone do not produce a nonzero scan exit code.
 
 DotDoctor discovers available system tools and uses built-in defaults.
 To adjust checks or connect an existing maintenance job, start with
-[dotdoctor.example.yml](dotdoctor.example.yml) and select your configuration:
+[dotdoctor.example.yml](dotdoctor.example.yml) and specify your configuration:
 
 ```bash
 dotdoctor --config /path/to/config.yml
 ```
 
-Backup monitoring is opt-in: without a configured adapter, `sys.backup` is omitted.
-Backups are not created automatically; snapshots do not replace a verified backup.
-Optional tools such as
-`arch-audit` or `smartctl` add coverage when installed. A clean report describes
-the checks performed, not every possible system failure.
+* **Backups:** Backup monitoring is opt-in: without a configured adapter, `sys.backup` is omitted. Backups are not created automatically; snapshots do not replace a verified backup.
+* **Optional Tools:** Utilities like `arch-audit` or `smartctl` expand check coverage when installed. A clean report reflects the checks performed, not every conceivable system failure.
+* **Statuses:** `WARN` and `FAIL` indicate issues requiring attention. An active timer without completion history displays a neutral `SKIP` (details visible via `-v` or JSON) and is counted separately from passed checks.
 
-`WARN` and `FAIL` identify problems requiring attention. An active timer without
-completion history uses a neutral `SKIP`, with details available through `-v`
-or JSON. It is counted separately from passed checks.
-
-[Configuration and maintenance](docs/reference.md#configuration) covers file
-precedence, intervals, timers, and the backup adapter.
+See [Configuration and maintenance](docs/reference.md#configuration) for details on
+file precedence, check intervals, timers, and the backup adapter.
 
 ## Project
 
 [Reference](docs/reference.md) · [Contributing](CONTRIBUTING.md) ·
 [Changelog](CHANGELOG.md) · [Release checklist](RELEASE_CHECKLIST.md) · [MIT license](LICENSE)
-
-The CLI has three system modes and a `version` subcommand. Earlier dev profiles
-and the `scan` command are no longer supported.

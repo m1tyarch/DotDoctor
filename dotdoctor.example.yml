@@ -28,6 +28,9 @@
 #   sys.rebuild         - Foreign package library compatibility
 disabled_checks: []
 
+# Always show all checks including passed ones in output (default: false):
+show_all: false
+
 maintenance:
   # Add your distribution's keyring package when needed.
   keyring_packages: [archlinux-keyring]

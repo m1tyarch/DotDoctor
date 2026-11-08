@@ -103,6 +103,7 @@ def render_terminal_report(
     console: Console,
     print_header: bool = True,
     verbose: bool = False,
+    show_all: bool = True,
     **kwargs: Any,
 ) -> None:
     if print_header:
@@ -113,8 +114,16 @@ def render_terminal_report(
         console.print(format_summary(report.summary))
         return
 
-    max_status_len = max((len(_status_label(r.severity)) for r in report.results), default=4)
-    max_id_len = max((len(r.check_id) for r in report.results), default=0)
+    visible_results = (
+        report.results if show_all else [r for r in report.results if r.severity != Severity.PASS]
+    )
+
+    if not visible_results:
+        console.print(format_summary(report.summary))
+        return
+
+    max_status_len = max((len(_status_label(r.severity)) for r in visible_results), default=4)
+    max_id_len = max((len(r.check_id) for r in visible_results), default=0)
 
     prefix_len = 2 + max_status_len + 2 + max_id_len + 2
     indent_spaces = " " * prefix_len
@@ -122,7 +131,7 @@ def render_terminal_report(
     console_width = console.width if console and console.width else 80
     msg_width = max(15, console_width - prefix_len)
 
-    for result in report.results:
+    for result in visible_results:
         label = _status_label(result.severity)
         st_style = _status_style(result.severity)
         id_str = result.check_id.ljust(max_id_len)

@@ -30,6 +30,7 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Filter out passed checks by default to keep diagnostic reports focused on actionable findings; dynamically hide passing items during live audits. Added `--all` (`-a`) option and `show_all` configuration to display all checks.
 - Show the complete pacman orphan-removal plan, package versions, additional
   dependencies and estimated space to free before confirmation. Revalidate after
   sudo authentication and remove only the approved set.

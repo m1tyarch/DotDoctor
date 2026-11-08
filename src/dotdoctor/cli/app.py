@@ -81,6 +81,12 @@ VERBOSE_OPTION = typer.Option(
     "-v",
     help="Show detailed findings and package version lists.",
 )
+ALL_OPTION = typer.Option(
+    False,
+    "--all",
+    "-a",
+    help="Show all checks including passed ones.",
+)
 DISABLE_CHECK_OPTION = typer.Option(
     [],
     "--disable-check",
@@ -104,6 +110,7 @@ def root(
     sysup: bool = SYSUP_OPTION,
     fix: bool = FIX_OPTION,
     verbose: bool = VERBOSE_OPTION,
+    show_all: bool = ALL_OPTION,
     disable_check: list[str] = DISABLE_CHECK_OPTION,
     json_output: Path | None = JSON_OUTPUT_OPTION,
     config: Path | None = CONFIG_OPTION,
@@ -115,6 +122,7 @@ def root(
         if sysup:
             _system_upgrade_impl(
                 verbose=verbose,
+                show_all=show_all,
                 disable_check=disable_check,
                 config_path=config,
             )
@@ -123,6 +131,7 @@ def root(
         if fix:
             _system_fix_impl(
                 verbose=verbose,
+                show_all=show_all,
                 disable_check=disable_check,
                 json_output=json_output,
                 config_path=config,
@@ -131,6 +140,7 @@ def root(
 
         _system_dry_run_impl(
             verbose=verbose,
+            show_all=show_all,
             json_output=json_output,
             disable_check=disable_check,
             config_path=config,
@@ -158,6 +168,7 @@ def _run_tasks_with_progress(
     all_disabled: list[str],
     include_checks: frozenset[str] | None,
     console: Console,
+    show_all: bool = False,
 ) -> ScanReport:
     results: dict[str, CheckResult | None] = {}
     spinners = {task.check_id: Spinner("dots") for task in tasks}
@@ -175,6 +186,8 @@ def _run_tasks_with_progress(
             st_renderable: Text | Spinner
             result = results.get(task.check_id)
             if result is not None:
+                if not show_all and result.severity == Severity.PASS:
+                    continue
                 st_renderable = format_check_status(result)
                 message = Text(
                     " ".join(result.message.split()),
@@ -227,6 +240,7 @@ def _run_tasks_with_progress(
 
 def _system_fix_impl(
     verbose: bool = False,
+    show_all: bool = False,
     disable_check: list[str] | None = None,
     json_output: Path | None = None,
     config_path: Path | None = None,
@@ -237,6 +251,8 @@ def _system_fix_impl(
     except ConfigError as exc:
         console.print(f"[red]DotDoctor config error:[/red] {exc}")
         raise typer.Exit(code=3) from None
+
+    effective_show_all = show_all or loaded_cfg.show_all
 
     all_disabled: list[str] = list(loaded_cfg.disabled_checks)
     if disable_check:
@@ -266,9 +282,14 @@ def _system_fix_impl(
         all_disabled,
         include_checks=FIX_CHECK_IDS,
         console=console,
+        show_all=effective_show_all,
     )
 
-    issues = [r for r in report.results if r.severity in {Severity.WARN, Severity.FAIL}]
+    issues = (
+        report.results
+        if effective_show_all
+        else [r for r in report.results if r.severity in {Severity.WARN, Severity.FAIL}]
+    )
 
     if not issues:
         skipped = [r for r in report.results if r.severity == Severity.SKIP]
@@ -306,6 +327,7 @@ def _system_fix_impl(
 
 def _system_upgrade_impl(
     verbose: bool = False,
+    show_all: bool = False,
     disable_check: list[str] | None = None,
     config_path: Path | None = None,
 ) -> None:
@@ -315,6 +337,8 @@ def _system_upgrade_impl(
     except ConfigError as exc:
         console.print(f"[red]DotDoctor config error:[/red] {exc}")
         raise typer.Exit(code=3) from None
+
+    effective_show_all = show_all or loaded_cfg.show_all
 
     all_disabled: list[str] = list(loaded_cfg.disabled_checks)
     if disable_check:
@@ -344,6 +368,7 @@ def _system_upgrade_impl(
         all_disabled,
         include_checks=UPDATE_CHECK_IDS,
         console=console,
+        show_all=effective_show_all,
     )
 
     has_updates = any(r.severity == Severity.OUTD for r in report.results)
@@ -366,7 +391,9 @@ def _system_upgrade_impl(
 
     # Show outdated or failed checks
     non_pass_results = (
-        report.results if verbose else [r for r in report.results if r.severity != Severity.PASS]
+        report.results
+        if (verbose or effective_show_all)
+        else [r for r in report.results if r.severity != Severity.PASS]
     )
     if non_pass_results:
         update_report = ScanReport(profile="system", results=non_pass_results)
@@ -385,6 +412,7 @@ def _system_upgrade_impl(
 
 def _system_dry_run_impl(
     verbose: bool = False,
+    show_all: bool = False,
     json_output: Path | None = None,
     disable_check: list[str] | None = None,
     config_path: Path | None = None,
@@ -395,6 +423,8 @@ def _system_dry_run_impl(
     except ConfigError as exc:
         console.print(f"[red]DotDoctor config error:[/red] {exc}")
         raise typer.Exit(code=3) from None
+
+    effective_show_all = show_all or loaded_cfg.show_all
 
     all_disabled: list[str] = list(loaded_cfg.disabled_checks)
     if disable_check:
@@ -420,9 +450,16 @@ def _system_dry_run_impl(
         all_disabled,
         include_checks=None,
         console=console,
+        show_all=effective_show_all,
     )
 
-    render_terminal_report(report, console, print_header=False, verbose=verbose)
+    render_terminal_report(
+        report,
+        console,
+        print_header=False,
+        verbose=verbose,
+        show_all=effective_show_all,
+    )
 
     has_updates = any(r.severity == Severity.OUTD for r in report.results)
     has_issues = any(r.severity in {Severity.WARN, Severity.FAIL} for r in report.results)

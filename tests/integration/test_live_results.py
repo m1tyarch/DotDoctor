@@ -45,16 +45,16 @@ def test_live_result_arrives_while_another_check_is_pending(
         output = io.StringIO()
         Console(file=output, width=width, color_system=None).print(grid)
         rows = output.getvalue().splitlines()
-        assert len(rows) == 2
-        assert "sys.slow" in rows[0]
-        assert "sys.fast" in rows[1]
         snapshots.append(rows)
         return rows
 
     class Live:
         def __init__(self, grid, **kwargs):
             assert kwargs["transient"] is True
-            snapshot(grid)
+            rows = snapshot(grid)
+            assert len(rows) == 2
+            assert "sys.slow" in rows[0]
+            assert "sys.fast" in rows[1]
 
         def __enter__(self):
             return self
@@ -67,14 +67,20 @@ def test_live_result_arrives_while_another_check_is_pending(
             rows = snapshot(grid)
             if not release_slow.is_set():
                 assert not slow_finished.is_set()
-                assert rows[1].startswith(f"  {status:<4}  sys.fast  ")
-                assert "DONE" not in rows[1]
-                if isinstance(outcome, Severity):
-                    assert "finding" in rows[1]
-                elif isinstance(outcome, OSError):
-                    assert "check could" in rows[1]
+                if outcome == Severity.PASS:
+                    assert len(rows) == 1
+                    assert "sys.slow" in rows[0]
                 else:
-                    assert "no result" in rows[1]
+                    assert len(rows) == 2
+                    assert "sys.slow" in rows[0]
+                    assert rows[1].startswith(f"  {status:<4}  sys.fast  ")
+                    assert "DONE" not in rows[1]
+                    if isinstance(outcome, Severity):
+                        assert "finding" in rows[1]
+                    elif isinstance(outcome, OSError):
+                        assert "check could" in rows[1]
+                    else:
+                        assert "no result" in rows[1]
                 release_slow.set()
 
     monkeypatch.setattr("dotdoctor.cli.app.Live", Live)
@@ -108,13 +114,79 @@ def test_live_result_arrives_while_another_check_is_pending(
         Console(file=io.StringIO(), width=width, force_terminal=True),
     )
     assert len(snapshots) == 3
-    assert snapshots[-1][0].startswith("  PASS  sys.slow  ok")
+    if outcome == Severity.PASS:
+        assert len(snapshots[-1]) == 0
+    else:
+        assert len(snapshots[-1]) == 1
+        assert snapshots[-1][0].startswith(f"  {status:<4}  sys.fast  ")
+
     assert [result.check_id for result in report.results] == (
         ["sys.slow"] if outcome is None else ["sys.slow", "sys.fast"]
     )
-    if isinstance(outcome, Severity) and width == 80:
+    if isinstance(outcome, Severity) and width == 80 and outcome != Severity.PASS:
         assert "[red]literal[/red]" in snapshots[1][1]
         assert "…" in snapshots[1][1]
+
+
+def test_live_result_with_show_all_keeps_passed_checks(monkeypatch, context):
+    monkeypatch.setenv("TERM", "xterm-256color")
+    for name in ("NO_ANIMATION", "DOTDOCTOR_NO_ANIMATION", "NO_COLOR"):
+        monkeypatch.delenv(name, raising=False)
+    release_slow = threading.Event()
+    snapshots = []
+
+    def snapshot(grid):
+        output = io.StringIO()
+        Console(file=output, width=80, color_system=None).print(grid)
+        rows = output.getvalue().splitlines()
+        snapshots.append(rows)
+        return rows
+
+    class Live:
+        def __init__(self, grid, **kwargs):
+            assert kwargs["transient"] is True
+            snapshot(grid)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            release_slow.set()
+
+        def update(self, grid, *, refresh):
+            assert refresh is True
+            snapshot(grid)
+            release_slow.set()
+
+    monkeypatch.setattr("dotdoctor.cli.app.Live", Live)
+
+    def slow():
+        assert release_slow.wait(2)
+        return CheckResult(check_id="sys.slow", severity=Severity.PASS, message="slow ok")
+
+    def fast():
+        return CheckResult(check_id="sys.fast", severity=Severity.PASS, message="fast ok")
+
+    tasks = [
+        SystemCheckTask("sys.slow", "Slow check", slow),
+        SystemCheckTask("sys.fast", "Fast check", fast),
+    ]
+    report = _run_tasks_with_progress(
+        SystemDryRunService(),
+        context,
+        tasks,
+        [],
+        None,
+        Console(file=io.StringIO(), width=80, force_terminal=True),
+        show_all=True,
+    )
+    assert len(snapshots) == 3
+    assert len(snapshots[0]) == 2
+    assert len(snapshots[1]) == 2
+    assert snapshots[1][1].startswith("  PASS  sys.fast  fast ok")
+    assert len(snapshots[2]) == 2
+    assert snapshots[2][0].startswith("  PASS  sys.slow  slow ok")
+    assert [r.check_id for r in report.results] == ["sys.slow", "sys.fast"]
 
 
 @pytest.mark.parametrize(

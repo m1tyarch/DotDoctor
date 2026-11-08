@@ -31,6 +31,7 @@ class MaintenanceConfig(BaseModel):
 
 class DotDoctorConfig(BaseModel):
     disabled_checks: list[str] = Field(default_factory=list)
+    show_all: bool = False
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
 
 

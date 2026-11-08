@@ -33,6 +33,14 @@ Show expanded details (e.g. all available update package versions):
 dotdoctor -v
 ```
 
+Show all checks including passed ones:
+
+```bash
+dotdoctor -a
+# or
+dotdoctor --all
+```
+
 Export report to JSON:
 
 ```bash

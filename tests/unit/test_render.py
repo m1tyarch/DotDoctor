@@ -449,3 +449,57 @@ def test_render_terminal_report_packages_singular_omitted() -> None:
     rendered = output.getvalue()
 
     assert "• (1 more package, use -v to show all)" in rendered
+
+
+def test_render_terminal_report_hides_pass_when_show_all_false() -> None:
+    output = io.StringIO()
+    console = Console(file=output, width=80, color_system=None)
+
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(
+                check_id="sys.packages",
+                severity=Severity.OUTD,
+                message="1 update available",
+            ),
+            CheckResult(
+                check_id="sys.disk",
+                severity=Severity.PASS,
+                message="plenty of space",
+            ),
+        ],
+    )
+
+    render_terminal_report(report, console, print_header=False, show_all=False)
+    rendered = output.getvalue()
+
+    assert "sys.packages" in rendered
+    assert "sys.disk" not in rendered
+    assert "1 passed · 1 outdated" in rendered
+
+
+def test_render_terminal_report_all_pass_when_show_all_false() -> None:
+    output = io.StringIO()
+    console = Console(file=output, width=80, color_system=None)
+
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(
+                check_id="sys.disk",
+                severity=Severity.PASS,
+                message="plenty of space",
+            ),
+            CheckResult(
+                check_id="sys.flatpak",
+                severity=Severity.PASS,
+                message="up to date",
+            ),
+        ],
+    )
+
+    render_terminal_report(report, console, print_header=False, show_all=False)
+    rendered = output.getvalue().strip()
+
+    assert rendered == "All 2 checks passed"

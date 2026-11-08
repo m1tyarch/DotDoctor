@@ -516,3 +516,93 @@ def test_version_command() -> None:
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
     assert result.stdout.strip() == f"dotdoctor {__version__}"
+
+
+def test_root_default_filters_out_passed_checks(monkeypatch) -> None:
+    def fake_run(self, context, on_task_complete=None, **kwargs):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.OUTD,
+                    message="2 updates available",
+                ),
+                CheckResult(
+                    check_id="sys.disk",
+                    severity=Severity.PASS,
+                    message="360 GiB free",
+                ),
+            ],
+        )
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+
+    result = runner.invoke(app, [], input="n\n")
+    assert result.exit_code == 0
+    assert "sys.packages" in result.stdout
+    assert "sys.disk" not in result.stdout
+    assert "1 passed · 1 outdated" in result.stdout
+
+
+def test_root_all_flag_shows_passed_checks(monkeypatch) -> None:
+    def fake_run(self, context, on_task_complete=None, **kwargs):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.OUTD,
+                    message="2 updates available",
+                ),
+                CheckResult(
+                    check_id="sys.disk",
+                    severity=Severity.PASS,
+                    message="360 GiB free",
+                ),
+            ],
+        )
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+
+    result = runner.invoke(app, ["--all"], input="n\n")
+    assert result.exit_code == 0
+    assert "sys.packages" in result.stdout
+    assert "sys.disk" in result.stdout
+    assert "1 passed · 1 outdated" in result.stdout
+
+
+def test_root_all_clean_scan_shows_summary_only(monkeypatch) -> None:
+    def fake_run(self, context, on_task_complete=None, **kwargs):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.PASS,
+                    message="up to date",
+                ),
+                CheckResult(
+                    check_id="sys.disk",
+                    severity=Severity.PASS,
+                    message="360 GiB free",
+                ),
+            ],
+        )
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+
+    result = runner.invoke(app, [])
+    assert result.exit_code == 0
+    assert "sys.packages" not in result.stdout
+    assert "sys.disk" not in result.stdout
+    assert "All 2 checks passed" in result.stdout
