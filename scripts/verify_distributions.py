@@ -6,7 +6,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import tomllib
 import venv
 from pathlib import Path
 
@@ -56,8 +55,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("artifacts", nargs="+", type=Path)
     args = parser.parse_args()
-    project = Path(__file__).resolve().parents[1] / "pyproject.toml"
-    expected = tomllib.loads(project.read_text())["project"]["version"]
+    init_file = Path(__file__).resolve().parents[1] / "src" / "dotdoctor" / "__init__.py"
+    match = re.search(r"^__version__\s*=\s*['\"]([^'\"]+)['\"]", init_file.read_text(), re.M)
+    if not match:
+        raise ValueError("Could not find __version__ in src/dotdoctor/__init__.py")
+    expected = match.group(1)
     for artifact in args.artifacts:
         verify(artifact.resolve(strict=True), expected)
 

@@ -1,6 +1,6 @@
 # Maintainer: m1tyarch
 pkgname=dotdoctor-git
-pkgver=0.1.0.r47.gb26779a
+pkgver=0.2.0b1.r67.g21a25b4
 pkgrel=1
 pkgdesc='Minimalist Arch Linux system diagnostics, updates and maintenance'
 arch=('any')
@@ -9,13 +9,9 @@ license=('MIT')
 depends=(
   'python>=3.11'
   'python-typer>=0.16.0'
-  'python-typer<1.0.0'
   'python-rich>=14.0.0'
-  'python-rich<16.0.0'
   'python-pydantic>=2.8.0'
-  'python-pydantic<3.0.0'
   'python-yaml>=6.0.0'
-  'python-yaml<7.0.0'
   'pacman'
   'pacman-contrib'
   'fakeroot'
@@ -39,7 +35,7 @@ optdepends=(
   'rebuild-detector: foreign package library compatibility checks'
   'btrfs-progs: Btrfs device and scrub checks'
 )
-provides=("dotdoctor=${pkgver}")
+provides=('dotdoctor')
 conflicts=('dotdoctor')
 source=('dotdoctor::git+https://github.com/m1tyarch/DotDoctor.git#branch=main')
 sha256sums=('SKIP')
@@ -47,7 +43,7 @@ sha256sums=('SKIP')
 pkgver() {
   cd dotdoctor
   local version
-  version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+  version=$(python -c 'import re; print(re.search(r"^__version__\s*=\s*[\x27\x22]([^\x27\x22]+)", open("src/dotdoctor/__init__.py").read(), re.M).group(1))')
   printf '%s.r%s.g%s' "$version" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
 }
 
@@ -64,6 +60,21 @@ check() {
 package() {
   cd dotdoctor
   python -m installer --destdir="$pkgdir" dist/*.whl
+
+  # Shell completions
+  install -d "$pkgdir/usr/share/bash-completion/completions" \
+             "$pkgdir/usr/share/zsh/site-functions" \
+             "$pkgdir/usr/share/fish/vendor_completions.d"
+  python -c '
+import typer.completion, pathlib
+for shell, path in [
+    ("bash", "'"$pkgdir"'/usr/share/bash-completion/completions/dotdoctor"),
+    ("zsh", "'"$pkgdir"'/usr/share/zsh/site-functions/_dotdoctor"),
+    ("fish", "'"$pkgdir"'/usr/share/fish/vendor_completions.d/dotdoctor.fish"),
+]:
+    pathlib.Path(path).write_text(typer.completion.get_completion_script(prog_name="dotdoctor", complete_var="_DOTDOCTOR_COMPLETE", shell=shell))
+' 2>/dev/null || true
+
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 docs/reference.md "$pkgdir/usr/share/doc/$pkgname/docs/reference.md"

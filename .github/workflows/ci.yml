@@ -5,13 +5,13 @@ on:
   pull_request:
 
 jobs:
-  test:
+  lint-and-check:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -27,14 +27,61 @@ jobs:
       - name: Format check (black)
         run: black --check .
 
-      - name: Type check (mypy)
-        run: mypy src
+      - name: Security check (bandit)
+        run: bandit -c pyproject.toml -r src
 
-      - name: Tests with coverage
-        run: pytest --cov=src/dotdoctor --cov-report=term-missing --cov-fail-under=75
+      - name: Bytecode compilation check
+        run: python -m compileall -q src
+
+      - name: Type check (mypy)
+        run: mypy
 
       - name: Build wheel and sdist
         run: python -m build
 
       - name: Verify clean artifact installs
         run: python scripts/verify_distributions.py dist/*.whl dist/*.tar.gz
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Tests with coverage
+        run: pytest --cov=src/dotdoctor --cov-report=term-missing --cov-fail-under=88
+
+  archlinux-pkgbuild:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Arch package dependencies
+        run: |
+          pacman -Syu --noconfirm git python python-build python-installer python-hatchling python-pytest python-typer python-rich python-pydantic python-yaml pacman-contrib fakeroot sudo systemd util-linux
+
+      - name: Setup non-root build user
+        run: |
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          chown -R builder:builder .
+
+      - name: Validate PKGBUILD syntax and .SRCINFO consistency
+        run: |
+          su builder -c "cd packaging/aur/dotdoctor-git && makepkg --printsrcinfo > /tmp/.test_srcinfo && diff -u .SRCINFO /tmp/.test_srcinfo"
