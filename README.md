@@ -14,8 +14,14 @@
 </div>
 
 Get a clear view of what needs attention before making any changes.
-DotDoctor brings system health checks, safe updates, and routine maintenance into a single, lightweight Linux CLI.
-Checks run in parallel, and results appear in your terminal the moment they are ready.
+DotDoctor provides parallel diagnostic audits, guarded updates, and interactive hygiene for Arch Linux systems in a lightweight CLI.
+
+DotDoctor defines up to **26 modular system checks** across five categories (executed concurrently depending on installed tools):
+* **Updates:** Official packages (`pacman` / `checkupdates`), AUR (`paru` / `yay`), Flatpaks, firmware (`fwupd`), and Oh-My-Zsh.
+* **Integrity & Security:** Package database consistency (`pacman -Dk`), package signing keys (`archlinux-keyring`), modified package files, unread Arch news notices, known vulnerabilities (`arch-audit`), and foreign library ABI rebuilds (`rebuild-detector`).
+* **System Hygiene:** Orphan packages, package cache size (`paccache`), unused Flatpak runtimes, `.pacnew` files, and `systemd-journald` disk usage.
+* **Hardware & Storage:** Storage device health (S.M.A.R.T. via `smartctl`), SSD discard/TRIM timers, Btrfs filesystem errors and scrubs, and filesystem mount capacities.
+* **Services & Runtime State:** Failed systemd units, scheduled maintenance timers, pending reboot detection (kernel/driver mismatch), and backup freshness.
 
 https://github.com/user-attachments/assets/8a176002-5070-47a3-a2e8-a789da28a998
 
@@ -23,7 +29,7 @@ https://github.com/user-attachments/assets/8a176002-5070-47a3-a2e8-a789da28a998
 
 ## Install
 
-Requires Linux and Python **3.11 or newer**.
+Requires an **Arch-based Linux distribution** (such as Arch Linux or CachyOS) with `pacman`, `systemd`, and **Python 3.11 or newer**.
 
 The latest pre-release is [v0.2.0-beta.1](https://github.com/m1tyarch/DotDoctor/releases/tag/v0.2.0-beta.1) (identified as `0.2.0b1` by Python packaging).
 
