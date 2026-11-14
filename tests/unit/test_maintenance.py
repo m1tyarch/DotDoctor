@@ -953,6 +953,13 @@ def test_rebuild_parses_actual_package_repository_columns(monkeypatch):
     assert m.MaintenanceChecks().rebuild().details["rebuild_packages"] == ["custom"]
 
 
+def test_rebuild_no_foreign_packages_code_1_is_pass(monkeypatch):
+    monkeypatch.setattr(m, "capture", lambda cmd, *args: response("", 1))
+    result = m.MaintenanceChecks().rebuild()
+    assert result.severity == Severity.PASS
+    assert "no foreign packages" in result.message
+
+
 def test_checked_timeout_is_unknown(monkeypatch):
     def timed_out(*args):
         raise subprocess.TimeoutExpired(["pacman"], 60)

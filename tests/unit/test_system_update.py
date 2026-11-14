@@ -1,4 +1,5 @@
 import io
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from dotdoctor.application.system_update import (
     UPDATE_CHECK_IDS,
     DiskSpaceStatus,
     RebootStatus,
+    SystemCheckTask,
     SystemDryRunService,
     SystemUpgradeService,
     detect_aur_helper,
@@ -1467,3 +1469,76 @@ def test_system_dry_run_include_checks_update_and_fix(monkeypatch, tmp_path: Pat
     assert "sys.orphans" in fix_ids
     assert "sys.cache" in fix_ids
     assert "sys.flatpak-unused" in fix_ids
+
+
+def test_run_tasks_catches_general_exception(tmp_path: Path) -> None:
+    service = SystemDryRunService()
+
+    def buggy_runner():
+        raise KeyError("unexpected key format")
+
+    task = SystemCheckTask(
+        check_id="sys.buggy",
+        label="Buggy check",
+        runner=buggy_runner,
+    )
+    report = service.run_with_progress(_context(tmp_path), tasks=[task])
+    result = report.get_result("sys.buggy")
+    assert result is not None
+    assert result.severity == Severity.WARN
+    assert "check could not be completed" in result.message
+    assert "unexpected key format" in result.message
+
+
+def test_run_step_strips_sudo_when_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = SystemUpgradeService()
+    console = Console(file=io.StringIO())
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+
+    ran_command: list[list[str]] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        ran_command.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    service._run_step(["sudo", "pacman", "-Syu"], console, "Upgrade")
+    assert ran_command == [["pacman", "-Syu"]]
+
+
+def test_upgrade_skips_aur_helper_when_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    service = SystemUpgradeService(
+        is_online_fn=lambda: True,
+        aur_helper_fn=lambda: "yay",
+        snapshot_tool_fn=lambda: None,
+    )
+    output = io.StringIO()
+    console = Console(file=output)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.detect_disk_space_status",
+        lambda: DiskSpaceStatus(10**10, 10**9, Severity.PASS, "ok", None),
+    )
+    monkeypatch.setattr(service, "_maintenance_preflight", lambda *args: True)
+    monkeypatch.setattr(service, "_prepare_keyring", lambda *args: True)
+    monkeypatch.setattr(service, "_refresh_mirrors", lambda *args: (False, "skip"))
+
+    executed_commands: list[list[str]] = []
+
+    def fake_step(cmd, console, title):
+        if os.geteuid() == 0 and cmd and cmd[0] == "sudo":
+            cmd = cmd[1:]
+        executed_commands.append(cmd)
+        return False, False, False
+
+    monkeypatch.setattr(service, "_run_step", fake_step)
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.shutil.which",
+        lambda name: f"/usr/bin/{name}",
+    )
+    service.run(_context(tmp_path), console)
+
+    assert any("Running as root; skipping yay" in output.getvalue() for _ in [1])
+    assert executed_commands[0] == ["pacman", "-Syu", "--noconfirm"]

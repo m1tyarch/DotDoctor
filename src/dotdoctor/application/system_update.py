@@ -599,7 +599,7 @@ class SystemDryRunService:
                         task = futures[future]
                         try:
                             ordered_results[task.check_id] = future.result()
-                        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                        except Exception as exc:
                             ordered_results[task.check_id] = CheckResult(
                                 check_id=task.check_id,
                                 severity=Severity.WARN,
@@ -662,15 +662,25 @@ class SystemDryRunService:
                 getattr(completed, "stderr", "") or getattr(completed, "stdout", "") or ""
             ).strip()
             missing_fakeroot = "cannot find the fakeroot binary" in error_output.lower()
+            is_locked = (
+                "db.lck" in error_output.lower()
+                or "unable to lock database" in error_output.lower()
+            )
+            if is_locked:
+                msg = "pacman database is locked (/var/lib/pacman/db.lck)"
+                remediation = "check running processes or remove /var/lib/pacman/db.lck"
+            elif missing_fakeroot:
+                msg = "checkupdates requires fakeroot; updates are not verified"
+                remediation = "sudo pacman -Syu fakeroot"
+            else:
+                msg = f"checkupdates failed (exit={completed.returncode})"
+                remediation = "checkupdates"
+
             return CheckResult(
                 check_id="sys.packages",
                 severity=Severity.WARN if missing_fakeroot else Severity.FAIL,
-                message=(
-                    "checkupdates requires fakeroot; updates are not verified"
-                    if missing_fakeroot
-                    else f"checkupdates failed (exit={completed.returncode})"
-                ),
-                remediation="sudo pacman -Syu fakeroot" if missing_fakeroot else "checkupdates",
+                message=msg,
+                remediation=remediation,
                 details={
                     "verified": False,
                     "returncode": completed.returncode,
@@ -813,6 +823,14 @@ class SystemDryRunService:
         return _result_for_count("sys.firmware", update_count)
 
     def _check_oh_my_zsh(self, omz_path: str) -> CheckResult:
+        if os.geteuid() == 0:
+            return CheckResult(
+                check_id="sys.shell-omz",
+                severity=Severity.SKIP,
+                message="skipped when running as root",
+                remediation=None,
+                details={"updates": 0},
+            )
         update_count = _detect_oh_my_zsh_updates(omz_path)
         if update_count is None:
             return _unverified(
@@ -1124,7 +1142,8 @@ class SystemDryRunService:
             for line in sys_res.completed.stdout.splitlines():
                 parts = line.strip().split()
                 if parts:
-                    failed_units.append(parts[0])
+                    unit = parts[1] if parts[0] in {"●", "*", "x"} and len(parts) > 1 else parts[0]
+                    failed_units.append(unit)
         else:
             unavailable.append("system")
 
@@ -1136,7 +1155,8 @@ class SystemDryRunService:
             for line in user_res.completed.stdout.splitlines():
                 parts = line.strip().split()
                 if parts:
-                    failed_units.append(f"{parts[0]} (user)")
+                    unit = parts[1] if parts[0] in {"●", "*", "x"} and len(parts) > 1 else parts[0]
+                    failed_units.append(f"{unit} (user)")
         else:
             unavailable.append("user")
 
@@ -1478,18 +1498,19 @@ class SystemUpgradeService:
     def run(self, context: ScanContext, console: Console) -> int:
         # Authentication is the first operation after upgrade confirmation.
         # All guards still run before snapshots or package/system mutations.
-        console.print("  [dim]Caching sudo credentials[/dim]")
-        try:
-            sudo_cache = subprocess.run(["sudo", "-v"], check=False, timeout=120)
-        except subprocess.TimeoutExpired:
-            console.print("[red]Sudo authentication timed out. Aborting update phase.[/red]")
-            return 3
-        except (OSError, subprocess.SubprocessError) as exc:
-            console.print(f"[red]Could not authenticate sudo: {escape(str(exc))}[/red]")
-            return 3
-        if sudo_cache.returncode != 0:
-            console.print("[red]Failed to cache sudo credentials. Aborting update phase.[/red]")
-            return 3
+        if os.geteuid() != 0:
+            console.print("  [dim]Caching sudo credentials[/dim]")
+            try:
+                sudo_cache = subprocess.run(["sudo", "-v"], check=False, timeout=120)
+            except subprocess.TimeoutExpired:
+                console.print("[red]Sudo authentication timed out. Aborting update phase.[/red]")
+                return 3
+            except (OSError, subprocess.SubprocessError) as exc:
+                console.print(f"[red]Could not authenticate sudo: {escape(str(exc))}[/red]")
+                return 3
+            if sudo_cache.returncode != 0:
+                console.print("[red]Failed to cache sudo credentials. Aborting update phase.[/red]")
+                return 3
 
         with self._preflight_progress(console, "Checking internet connection"):
             online = self._is_online_fn()
@@ -1567,6 +1588,13 @@ class SystemUpgradeService:
         aur_helper = self._aur_helper_fn()
         update_cmd: list[str] | None = None
         update_title = "System update"
+
+        if aur_helper in {"paru", "yay"} and os.geteuid() == 0:
+            console.print(
+                f"  [yellow]Warning: Running as root; skipping {aur_helper} "
+                f"(AUR helpers cannot build packages as root).[/yellow]"
+            )
+            aur_helper = None
 
         if aur_helper == "paru":
             update_cmd = ["paru", "-Syu", "--noconfirm", "--sudoloop"]
@@ -1723,18 +1751,28 @@ class SystemUpgradeService:
 
         omz_upgrade = context.home / ".oh-my-zsh" / "tools" / "upgrade.sh"
         if omz_upgrade.exists():
-            omz_error, _, omz_updated = self._run_step(
-                ["sh", str(omz_upgrade)],
-                console,
-                "Oh-My-Zsh update",
-            )
-            had_error |= omz_error
-            if omz_error:
-                fail_count += 1
+            if os.geteuid() == 0:
+                for line_text in format_status_line(
+                    STATUS_SKIP,
+                    "Oh-My-Zsh update",
+                    detail="(skipped: cannot run shell script as root)",
+                    width=console_width,
+                ):
+                    console.print(line_text)
+                skip_count += 1
             else:
-                done_count += 1
-                if omz_updated:
-                    any_updates = True
+                omz_error, _, omz_updated = self._run_step(
+                    ["sh", str(omz_upgrade)],
+                    console,
+                    "Oh-My-Zsh update",
+                )
+                had_error |= omz_error
+                if omz_error:
+                    fail_count += 1
+                else:
+                    done_count += 1
+                    if omz_updated:
+                        any_updates = True
         else:
             for line_text in format_status_line(
                 STATUS_SKIP,
@@ -1778,7 +1816,7 @@ class SystemUpgradeService:
                 "configuration files found:[/bold yellow]"
             )
             for f in pacnew_files[:5]:
-                console.print(f"  [yellow]{f}[/yellow]")
+                console.print(f"  [yellow]{escape(str(f))}[/yellow]")
             console.print(
                 "[yellow]Run 'pacdiff' to review and merge configuration updates.[/yellow]"
             )
@@ -2075,6 +2113,7 @@ class SystemUpgradeService:
         console: Console,
         title: str,
         console_width: int,
+        timeout: float = 300.0,
     ) -> SimpleNamespace:
         proc = subprocess.Popen(
             command,
@@ -2130,11 +2169,19 @@ class SystemUpgradeService:
                 grid.add_row(INDENT, "", GAP, f"[dim]↳ {escape(truncated)}[/dim]")
             return grid
 
+        deadline = time.monotonic() + timeout
         try:
             with Live(
                 _build_grid(), console=console, transient=True, refresh_per_second=10
             ) as live:
                 while proc.poll() is None:
+                    if time.monotonic() > deadline:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        raise subprocess.TimeoutExpired(command, timeout)
                     sub = current_subline[0]
                     live.update(_build_grid(sub))
                     time.sleep(0.08)
@@ -2157,6 +2204,8 @@ class SystemUpgradeService:
     def _run_step(
         self, command: list[str], console: Console, title: str
     ) -> tuple[bool, bool, bool]:
+        if os.geteuid() == 0 and command and command[0] == "sudo":
+            command = command[1:]
         console_width = getattr(console, "width", 80) or 80
         is_interactive = (
             bool(getattr(console, "is_terminal", False))
@@ -2180,13 +2229,16 @@ class SystemUpgradeService:
                 and hasattr(console, "status")
                 and subprocess.run is _ORIGINAL_SUBPROCESS_RUN
             ):
-                completed = self._run_streaming_step(command, console, title, console_width)
+                completed = self._run_streaming_step(
+                    command, console, title, console_width, timeout=300.0
+                )
             else:
                 completed = subprocess.run(
                     command,
                     check=False,
                     capture_output=True,
                     text=True,
+                    timeout=300,
                 )
         except subprocess.TimeoutExpired:
             for line_text in format_status_line(
@@ -2228,7 +2280,7 @@ class SystemUpgradeService:
                     wrapped_err = textwrap.wrap(err_line, width=avail_width) or [err_line]
                     for i, w in enumerate(wrapped_err):
                         p = prefix if i == 0 else "          "
-                        console.print(f"[dim]{p}{w}[/dim]")
+                        console.print(f"[dim]{p}{escape(w)}[/dim]")
             return True, is_net_failure, False
 
         had_updates = needs_input or _detect_step_updates(command, stdout_output, stderr_output)

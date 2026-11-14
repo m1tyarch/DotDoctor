@@ -212,7 +212,15 @@ class MaintenanceChecks:
 
     def news(self) -> CheckResult:
         seen = MaintenanceState().read().get("news", [])
-        items = [item for item in fetch_news() if item["url"] not in seen]
+        try:
+            items = [item for item in fetch_news() if item["url"] not in seen]
+        except (ValueError, OSError):
+            return _result(
+                "sys.news",
+                Severity.SKIP,
+                "Arch news could not be retrieved",
+                verified=False,
+            )
         if items:
             return _result(
                 "sys.news",
@@ -851,6 +859,8 @@ class MaintenanceChecks:
     def rebuild(self) -> CheckResult:
         cid = "sys.rebuild"
         foreign = capture(["pacman", "-Qmq"])
+        if foreign.returncode == 1 and not foreign.stdout.strip() and not foreign.stderr.strip():
+            return _result(cid, Severity.PASS, "no foreign packages require rebuild checks")
         if foreign.returncode:
             raise ValueError("foreign package list unavailable")
         if not foreign.stdout.strip():

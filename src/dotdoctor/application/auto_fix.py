@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import typer
 from rich.console import Console
 from rich.live import Live
+from rich.markup import escape
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
@@ -105,7 +106,7 @@ class InteractiveAutoFixer:
                 # must never inherit a terminal being redrawn by a spinner.
                 outcome = fix_handler(context, result)
             except (OSError, subprocess.SubprocessError) as exc:
-                self._console.print(f"[red]Auto-fix failed:[/red] {exc}")
+                self._console.print(f"[red]Auto-fix failed:[/red] {escape(str(exc))}")
                 continue
 
             if result.check_id == "sys.reboot":
@@ -299,7 +300,7 @@ class InteractiveAutoFixer:
             )
             if not typer.confirm(prompt, default=True):
                 return FixOutcome(False, "Removal declined.")
-        except typer.Abort:
+        except (typer.Abort, EOFError):
             return FixOutcome(False, "Removal declined.")
 
         def revalidate() -> FixOutcome | None:
@@ -421,21 +422,25 @@ class InteractiveAutoFixer:
         return outcome
 
     def _fix_sys_reboot(self, context: ScanContext, result: CheckResult) -> FixOutcome:
-        self._console.print("  [dim]Caching sudo credentials[/dim]")
-        try:
-            # Inherit the terminal outside any Live display so sudo's password
-            # prompt remains visible. Only authentication may ask for input.
-            credentials = subprocess.run(["sudo", "-v"], check=False, timeout=120)
-        except subprocess.TimeoutExpired:
-            return FixOutcome(False, "Sudo authentication timed out; no reboot requested.")
-        if credentials.returncode:
-            return FixOutcome(False, "Sudo authentication failed; no reboot requested.")
+        if os.geteuid() != 0:
+            self._console.print("  [dim]Caching sudo credentials[/dim]")
+            try:
+                # Inherit the terminal outside any Live display so sudo's password
+                # prompt remains visible. Only authentication may ask for input.
+                credentials = subprocess.run(["sudo", "-v"], check=False, timeout=120)
+            except subprocess.TimeoutExpired:
+                return FixOutcome(False, "Sudo authentication timed out; no reboot requested.")
+            except (OSError, subprocess.SubprocessError) as exc:
+                return FixOutcome(False, f"Could not authenticate sudo: {exc}")
+            if credentials.returncode:
+                return FixOutcome(False, "Sudo authentication failed; no reboot requested.")
 
-        cmd = (
-            ["sudo", "-n", "systemctl", "--no-ask-password", "reboot"]
+        base_reboot = (
+            ["systemctl", "--no-ask-password", "reboot"]
             if shutil.which("systemctl")
-            else ["sudo", "-n", "reboot"]
+            else ["reboot"]
         )
+        cmd = base_reboot if os.geteuid() == 0 else ["sudo", "-n", *base_reboot]
         self._console.print("  [dim]Requesting system reboot[/dim]")
         try:
             res = subprocess.run(cmd, check=False, timeout=15)
@@ -557,7 +562,7 @@ class InteractiveAutoFixer:
         """Authenticate with the terminal idle, then run captured, noninteractive steps."""
         if not commands:
             return FixOutcome(False, "No safe automated action is available.")
-        if any(command[0] == "sudo" for command, _ in commands):
+        if os.geteuid() != 0 and any(command[0] == "sudo" for command, _ in commands):
             try:
                 cached = subprocess.run(
                     ["sudo", "-n", "-v"],
@@ -583,18 +588,22 @@ class InteractiveAutoFixer:
 
         for command, label in commands:
             if command[0] == "sudo":
-                command = ["sudo", "-n", *command[1:]]
+                command = command[1:] if os.geteuid() == 0 else ["sudo", "-n", *command[1:]]
             if "systemctl" in command:
                 index = command.index("systemctl") + 1
                 command = [*command[:index], "--no-ask-password", *command[index:]]
             with self._maintenance_progress(label):
-                completed = subprocess.run(
-                    command,
-                    check=False,
-                    stdin=subprocess.DEVNULL,
-                    capture_output=True,
-                    text=True,
-                )
+                try:
+                    completed = subprocess.run(
+                        command,
+                        check=False,
+                        stdin=subprocess.DEVNULL,
+                        capture_output=True,
+                        text=True,
+                        timeout=300,
+                    )
+                except subprocess.TimeoutExpired:
+                    return FixOutcome(False, f"{label} timed out after 300 seconds.")
             if completed.returncode:
                 error = getattr(completed, "stderr", "") or getattr(completed, "stdout", "") or ""
                 for message in error.strip().splitlines()[-3:]:
