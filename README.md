@@ -101,21 +101,27 @@ When running `dotdoctor --sysup`:
 4. **Failure handling:** If a transaction fails, subsequent mutations abort, failure counts are reported, and rollback instructions are displayed (`sudo snapper rollback` or `sudo timeshift --restore`).
 5. **Post-flight checks and `.pacnew`:** Scans `/etc` for new `.pacnew` files and prints review reminders (`pacdiff`). Verifies systemd unit statuses and checks whether a kernel update requires a reboot.
 
-<details>
-<summary>Export a report or exclude a check</summary>
+### Machine-Readable Output (JSON)
+
+DotDoctor provides machine-readable output for automation, monitoring, and scripting:
 
 ```bash
-dotdoctor --json-output report.json
-dotdoctor --disable-check sys.firmware
+dotdoctor --json                     # Output structured JSON report directly to stdout
+dotdoctor --json-output report.json  # Save structured JSON report to a file
 ```
 
-JSON export is available for the default and fix modes. JSON uses `OUTD` for
-terminal `OLD` and `SKIP` for neutral, unverified results.
-Disabling a package-manager check excludes its audit, not its
-update transaction. See [reporting and exit codes](docs/reference.md#exit-codes)
-for automation: warnings alone do not produce a nonzero exit code.
+The output contains metadata (`dotdoctor_version`, `schema_version`), an execution `summary` (`total`, `passed`, `warnings`, `failures`, `outdated`, `skipped`), the overall `exit_code`, and an array of individual `results`.
 
-</details>
+### Exit Codes
+
+DotDoctor uses standard exit codes suitable for CI/CD and shell scripting:
+
+| Code | Meaning | Typical Causes |
+| :---: | :--- | :--- |
+| `0` | Success / Clean | All checks passed (`PASS` / `SKIP`); or update completed with zero errors. |
+| `1` | Warnings or Outdated | One or more checks returned `WARN` or `OUTD`; or pre-flight network/disk check failed. |
+| `2` | Critical Issue / Failure | One or more checks returned `FAIL`; or pre-update snapshot or package transaction failed. |
+| `3` | Configuration or Auth Error | Configuration file not found / invalid syntax; or `sudo` authentication timed out. |
 
 ## Configure
 
