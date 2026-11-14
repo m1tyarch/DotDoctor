@@ -1,7 +1,9 @@
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
+
+from dotdoctor import __version__
 
 
 class Severity(StrEnum):
@@ -23,7 +25,10 @@ class CheckResult(BaseModel):
 class ScanReport(BaseModel):
     profile: str
     results: list[CheckResult]
+    schema_version: str = "1.0"
+    dotdoctor_version: str = Field(default_factory=lambda: __version__)
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def summary(self) -> dict[str, int]:
         pass_count = 0
@@ -52,6 +57,7 @@ class ScanReport(BaseModel):
             "SKIP": skip_count,
         }
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def exit_code(self) -> int:
         summary = self.summary

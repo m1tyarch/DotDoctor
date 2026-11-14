@@ -133,8 +133,6 @@ def test_render_light_list_no_headers_no_frames() -> None:
                 remediation="check network connection",
             ),
         ],
-        summary={"PASS": 1, "OUTD": 1, "WARN": 1, "FAIL": 1},
-        duration_ms=42.0,
     )
 
     render_terminal_report(report, console)
@@ -197,8 +195,6 @@ def test_render_hanging_indent_wrapping_at_80_and_60_cols() -> None:
                 remediation=long_rem,
             )
         ],
-        summary={"PASS": 0, "OUTD": 0, "WARN": 1, "FAIL": 0},
-        duration_ms=10.0,
     )
 
     for width in (80, 60):
@@ -245,8 +241,6 @@ def test_render_no_ansi_when_no_color() -> None:
                 remediation="clean cache",
             ),
         ],
-        summary={"PASS": 1, "OUTD": 0, "WARN": 1, "FAIL": 0},
-        duration_ms=15.0,
     )
 
     render_terminal_report(report, console)
@@ -314,7 +308,6 @@ def test_legacy_check_id_normalization() -> None:
         results=[
             CheckResult(check_id="sys.packages", severity=Severity.PASS, message="ok"),
         ],
-        summary={"PASS": 1, "OUTD": 0, "WARN": 0, "FAIL": 0},
     )
     assert report.get_result("sys.packages") is not None
     assert report.get_result("sys:packages") is not None
@@ -340,7 +333,6 @@ def test_render_terminal_report_instant_rendering() -> None:
                 remediation="clean it",
             ),
         ],
-        summary={"PASS": 1, "OUTD": 0, "WARN": 1, "FAIL": 0},
     )
 
     render_terminal_report(report, console)
@@ -372,7 +364,6 @@ def test_render_terminal_report_packages_default_truncation() -> None:
                 details={"packages": pkgs},
             )
         ],
-        summary={"PASS": 0, "OUTD": 1, "WARN": 0, "FAIL": 0},
     )
 
     render_terminal_report(report, console, verbose=False)
@@ -408,7 +399,6 @@ def test_render_terminal_report_packages_verbose() -> None:
                 details={"packages": pkgs},
             )
         ],
-        summary={"PASS": 0, "OUTD": 1, "WARN": 0, "FAIL": 0},
     )
 
     render_terminal_report(report, console, verbose=True)
@@ -442,7 +432,6 @@ def test_render_terminal_report_packages_singular_omitted() -> None:
                 details={"packages": pkgs},
             )
         ],
-        summary={"PASS": 0, "OUTD": 1, "WARN": 0, "FAIL": 0},
     )
 
     render_terminal_report(report, console, verbose=False)

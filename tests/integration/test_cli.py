@@ -426,6 +426,35 @@ def test_root_json_output(monkeypatch, tmp_path: Path) -> None:
     assert '"sys.packages"' in out_file.read_text(encoding="utf-8")
 
 
+def test_root_json_output_write_error_handled(monkeypatch, tmp_path: Path) -> None:
+    def fake_run(self, context, on_task_complete=None, **kwargs):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.PASS,
+                    message="up to date",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+
+    out_file = tmp_path / "report.json"
+
+    def fail_write(*args, **kwargs):
+        raise PermissionError("Permission denied writing json")
+
+    monkeypatch.setattr(Path, "write_text", fail_write)
+
+    result = runner.invoke(app, ["--json-output", str(out_file)])
+    assert "Failed to export JSON report" in result.output
+
+
 def test_root_refreshes_report_after_sysup(monkeypatch) -> None:
     call_count = [0]
     fixed_applied = []

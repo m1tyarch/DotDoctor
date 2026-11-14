@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -6,6 +7,7 @@ import typer
 import typer.rich_utils
 from rich.console import Console
 from rich.live import Live
+from rich.markup import escape
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
@@ -60,19 +62,40 @@ def _custom_rich_format_error(self: Any) -> None:
 
 typer.rich_utils.rich_format_error = _custom_rich_format_error
 
+EPILOG = """
+[bold]Examples:[/bold]
+  dotdoctor                      Run default diagnostic scan
+  dotdoctor --sysup              Upgrade system packages, mirrors and firmware
+  dotdoctor --fix                Review and fix system findings interactively
+  dotdoctor --all                Show all checks including clean ones
+  dotdoctor --json               Output scan results as JSON to stdout
+  dotdoctor -c custom.yml        Run using custom configuration file
+"""
+
 app = typer.Typer(
     help="DotDoctor: Minimalist Linux system diagnostic and update utility.",
-    add_completion=False,
+    epilog=EPILOG,
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        console = Console()
+        console.print(f"dotdoctor {__version__}")
+        raise typer.Exit()
+
 
 SYSUP_OPTION = typer.Option(
     False,
     "--sysup",
+    "-u",
     help="Run sequential comprehensive system update.",
 )
 FIX_OPTION = typer.Option(
     False,
     "--fix",
+    "-f",
     help="Interactively apply safe auto-fixes for detected issues.",
 )
 VERBOSE_OPTION = typer.Option(
@@ -90,17 +113,32 @@ ALL_OPTION = typer.Option(
 DISABLE_CHECK_OPTION = typer.Option(
     [],
     "--disable-check",
+    "-d",
     help="Disable a check id for this run (can be repeated).",
+)
+JSON_OPTION = typer.Option(
+    False,
+    "--json",
+    help="Print machine-readable JSON report directly to stdout.",
 )
 JSON_OUTPUT_OPTION = typer.Option(
     None,
     "--json-output",
-    help="Optional file path for machine-readable JSON report.",
+    help="Optional file path to save machine-readable JSON report.",
 )
 CONFIG_OPTION = typer.Option(
     None,
     "--config",
-    help="Path to dotdoctor YAML config. Defaults to XDG config or dotdoctor.yml.",
+    "-c",
+    help="Path to dotdoctor YAML config (default: ~/.config/dotdoctor/config.yml).",
+)
+VERSION_OPTION = typer.Option(
+    None,
+    "--version",
+    "-V",
+    help="Show version and exit.",
+    callback=_version_callback,
+    is_eager=True,
 )
 
 
@@ -112,8 +150,10 @@ def root(
     verbose: bool = VERBOSE_OPTION,
     show_all: bool = ALL_OPTION,
     disable_check: list[str] = DISABLE_CHECK_OPTION,
+    json: bool = JSON_OPTION,
     json_output: Path | None = JSON_OUTPUT_OPTION,
     config: Path | None = CONFIG_OPTION,
+    version: bool | None = VERSION_OPTION,
 ) -> None:
     if ctx.invoked_subcommand is None:
         if sysup and fix:
@@ -141,6 +181,7 @@ def root(
         _system_dry_run_impl(
             verbose=verbose,
             show_all=show_all,
+            json_stdout=json,
             json_output=json_output,
             disable_check=disable_check,
             config_path=config,
@@ -154,7 +195,13 @@ def version() -> None:
     console.print(f"dotdoctor {__version__}")
 
 
+def _can_prompt() -> bool:
+    return (sys.stdin.isatty() and sys.stdout.isatty()) or "PYTEST_CURRENT_TEST" in os.environ
+
+
 def _safe_confirm(prompt: str, default: bool = True) -> bool:
+    if not _can_prompt():
+        return False
     try:
         return typer.confirm(prompt, default=default)
     except (typer.Abort, Exception):
@@ -238,6 +285,29 @@ def _run_tasks_with_progress(
         )
 
 
+def _export_json_report(
+    report: ScanReport,
+    json_output: Path | None,
+    console: Console,
+    silent_on_success: bool = False,
+) -> None:
+    if json_output is None:
+        return
+    try:
+        if json_output.is_symlink():
+            raise OSError(f"Refusing to write to symlink: {json_output}")
+        json_output.parent.mkdir(parents=True, exist_ok=True)
+        if json_output.is_symlink():
+            raise OSError(f"Refusing to write to symlink: {json_output}")
+        json_output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+        if not silent_on_success:
+            console.print(f"JSON report exported to: {json_output}")
+    except OSError as exc:
+        console.print(
+            f"[red]Failed to export JSON report to {json_output}:[/red] {escape(str(exc))}"
+        )
+
+
 def _system_fix_impl(
     verbose: bool = False,
     show_all: bool = False,
@@ -249,7 +319,7 @@ def _system_fix_impl(
     try:
         loaded_cfg = load_config(config_path)
     except ConfigError as exc:
-        console.print(f"[red]DotDoctor config error:[/red] {exc}")
+        Console(stderr=True).print(f"[red]DotDoctor config error:[/red] {escape(str(exc))}")
         raise typer.Exit(code=3) from None
 
     effective_show_all = show_all or loaded_cfg.show_all
@@ -303,10 +373,7 @@ def _system_fix_impl(
         else:
             console.print("  [dim green]PASS[/dim green]  System hygiene clean.")
         console.print("\n[dim]Nothing to fix.[/dim]")
-        if json_output is not None:
-            json_output.parent.mkdir(parents=True, exist_ok=True)
-            json_output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-            console.print(f"JSON report exported to: {json_output}")
+        _export_json_report(report, json_output, console)
         raise typer.Exit(code=0)
 
     # Show only actionable findings
@@ -317,10 +384,7 @@ def _system_fix_impl(
     fixer = InteractiveAutoFixer(console, config=loaded_cfg)
     report = fixer.apply(report, context)
 
-    if json_output is not None:
-        json_output.parent.mkdir(parents=True, exist_ok=True)
-        json_output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-        console.print(f"JSON report exported to: {json_output}")
+    _export_json_report(report, json_output, console)
 
     raise typer.Exit(code=report.exit_code)
 
@@ -335,7 +399,7 @@ def _system_upgrade_impl(
     try:
         loaded_cfg = load_config(config_path)
     except ConfigError as exc:
-        console.print(f"[red]DotDoctor config error:[/red] {exc}")
+        Console(stderr=True).print(f"[red]DotDoctor config error:[/red] {escape(str(exc))}")
         raise typer.Exit(code=3) from None
 
     effective_show_all = show_all or loaded_cfg.show_all
@@ -413,6 +477,7 @@ def _system_upgrade_impl(
 def _system_dry_run_impl(
     verbose: bool = False,
     show_all: bool = False,
+    json_stdout: bool = False,
     json_output: Path | None = None,
     disable_check: list[str] | None = None,
     config_path: Path | None = None,
@@ -421,7 +486,7 @@ def _system_dry_run_impl(
     try:
         loaded_cfg = load_config(config_path)
     except ConfigError as exc:
-        console.print(f"[red]DotDoctor config error:[/red] {exc}")
+        Console(stderr=True).print(f"[red]DotDoctor config error:[/red] {escape(str(exc))}")
         raise typer.Exit(code=3) from None
 
     effective_show_all = show_all or loaded_cfg.show_all
@@ -437,6 +502,14 @@ def _system_dry_run_impl(
         path_value=os.environ.get("PATH", ""),
         shell=os.environ.get("SHELL"),
     )
+
+    if json_stdout:
+        service = SystemDryRunService(config=loaded_cfg)
+        report = service.run(context, disabled_checks=all_disabled)
+        _export_json_report(report, json_output, console, silent_on_success=True)
+        sys.stdout.write(report.model_dump_json(indent=2) + "\n")
+        raise typer.Exit(code=report.exit_code)
+
     console.print(format_header(context.profile))
     console.print()
 
@@ -464,7 +537,7 @@ def _system_dry_run_impl(
     has_updates = any(r.severity == Severity.OUTD for r in report.results)
     has_issues = any(r.severity in {Severity.WARN, Severity.FAIL} for r in report.results)
 
-    if has_updates:
+    if has_updates and _can_prompt():
         console.print()
         if _safe_confirm("Update everything now?", default=True):
             console.print()
@@ -473,9 +546,7 @@ def _system_dry_run_impl(
             upgrade_service = SystemUpgradeService(config=loaded_cfg)
             upgrade_code = upgrade_service.run(context, console)
             if upgrade_code:
-                if json_output is not None:
-                    json_output.parent.mkdir(parents=True, exist_ok=True)
-                    json_output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+                _export_json_report(report, json_output, console, silent_on_success=True)
                 raise typer.Exit(code=upgrade_code)
             # Re-evaluate report after system update
             report = service.run(context, disabled_checks=all_disabled)
@@ -497,16 +568,13 @@ def _system_dry_run_impl(
                     verbose=verbose,
                 )
 
-    if has_issues:
+    if has_issues and _can_prompt():
         fixer = InteractiveAutoFixer(console, config=loaded_cfg)
         if any(fixer.can_fix(result) for result in report.results) and _safe_confirm(
             "Apply fixes for detected issues now?", default=True
         ):
             report = fixer.apply(report, context)
 
-    if json_output is not None:
-        json_output.parent.mkdir(parents=True, exist_ok=True)
-        json_output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-        console.print(f"JSON report exported to: {json_output}")
+    _export_json_report(report, json_output, console)
 
     raise typer.Exit(code=report.exit_code)
