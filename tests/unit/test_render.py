@@ -248,18 +248,22 @@ def test_render_no_ansi_when_no_color() -> None:
     assert "\x1b[" not in rendered
 
 
-def test_detect_disk_space_same_fs_merged(monkeypatch, tmp_path: Path) -> None:
+def test_detect_disk_space_same_fs_merged(monkeypatch) -> None:
     # When root and boot have identical st_dev
     fake_stat_root = MagicMock()
     fake_stat_root.st_dev = 42
     fake_stat_boot = MagicMock()
     fake_stat_boot.st_dev = 42
+    orig_stat = Path.stat
 
-    monkeypatch.setattr(
-        Path,
-        "stat",
-        lambda self: fake_stat_root if str(self) == "/" else fake_stat_boot,
-    )
+    def mock_stat(self, *args, **kwargs):
+        if str(self) == "/":
+            return fake_stat_root
+        if str(self) == "/boot":
+            return fake_stat_boot
+        return orig_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", mock_stat)
 
     status = detect_disk_space_status(
         root_path=Path("/"),
@@ -272,17 +276,20 @@ def test_detect_disk_space_same_fs_merged(monkeypatch, tmp_path: Path) -> None:
     assert "free on / and /boot" in status.message
 
 
-def test_detect_disk_space_diff_fs_separated(monkeypatch, tmp_path: Path) -> None:
+def test_detect_disk_space_diff_fs_separated(monkeypatch) -> None:
     # When root and boot have different st_dev
     fake_stat_root = MagicMock()
     fake_stat_root.st_dev = 1
     fake_stat_boot = MagicMock()
     fake_stat_boot.st_dev = 2
+    orig_stat = Path.stat
 
-    def mock_stat(self):
+    def mock_stat(self, *args, **kwargs):
         if str(self) == "/":
             return fake_stat_root
-        return fake_stat_boot
+        if str(self) == "/boot":
+            return fake_stat_boot
+        return orig_stat(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "stat", mock_stat)
 

@@ -207,6 +207,8 @@ def test_auto_fix_handles_eof_on_prompt(
     console = Console(record=True)
     service._console = console
 
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/pacman" if cmd == "pacman" else None)
+
     mock_plan = OrphanRemovalPlan(
         targets=("orphan-pkg",),
         packages=(RemovalPackage(name="orphan-pkg", version="1.0.0", size=1024),),
