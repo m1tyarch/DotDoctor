@@ -31,11 +31,11 @@ https://github.com/user-attachments/assets/8a176002-5070-47a3-a2e8-a789da28a998
 
 Requires an **Arch-based Linux distribution** (such as Arch Linux or CachyOS) with `pacman`, `systemd`, and **Python 3.11 or newer**.
 
-The latest pre-release is [v0.2.0-beta.1](https://github.com/m1tyarch/DotDoctor/releases/tag/v0.2.0-beta.1) (identified as `0.2.0b1` by Python packaging).
+Check the [Releases](https://github.com/m1tyarch/DotDoctor/releases) page for release notes and tagged versions.
 
-### Option A: Local Arch Package (Recommended)
+### Option A: Native Arch Linux Package (Recommended)
 
-Build and install natively via `makepkg` (see [Arch packaging](packaging/aur/README.md); AUR publication coming soon):
+Builds the latest package directly from the repository's `main` branch and registers it with `pacman` (see [Arch packaging](packaging/aur/README.md)):
 
 ```bash
 git clone https://github.com/m1tyarch/DotDoctor.git
@@ -43,18 +43,29 @@ cd DotDoctor/packaging/aur/dotdoctor-git
 makepkg -si
 ```
 
-### Option B: Install from source in a virtualenv
+This installs `dotdoctor` to `/usr/bin/dotdoctor`, installs shell completions for Bash, Zsh, and Fish, and tracks dependencies natively via `pacman`.
+
+### Option B: Isolated Installation via pipx or virtualenv
+
+Because Arch Linux marks the system Python environment as externally managed (PEP 668), standalone Python CLIs should be installed into an isolated environment.
+
+Using [pipx](https://github.com/pypa/pipx):
 
 ```bash
-git clone --branch v0.2.0-beta.1 --depth 1 https://github.com/m1tyarch/DotDoctor.git
-cd DotDoctor
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
-dotdoctor
+pipx install git+https://github.com/m1tyarch/DotDoctor.git
 ```
 
-For subsequent runs, activate the virtual environment or run `.venv/bin/dotdoctor`. To contribute or work on the development version, clone the `main` branch instead; see [Contributing](CONTRIBUTING.md).
+Or using a standard virtual environment:
+
+```bash
+git clone https://github.com/m1tyarch/DotDoctor.git
+cd DotDoctor
+python -m venv .venv
+.venv/bin/pip install .
+.venv/bin/dotdoctor
+```
+
+For subsequent runs, execute `.venv/bin/dotdoctor` or activate the environment (`source .venv/bin/activate`). For development and testing with editable installs (`pip install -e .`), see [Contributing](CONTRIBUTING.md).
 
 ## Use
 
