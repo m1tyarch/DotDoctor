@@ -72,21 +72,25 @@ For subsequent runs, execute `.venv/bin/dotdoctor` or activate the environment (
 Start with `dotdoctor` whenever you want to see what needs attention.
 Choose an explicit mode when you already know the next step:
 
-| Command | What happens |
-| :--- | :--- |
-| `dotdoctor` | Audit the system in parallel, then offer updates or supported fixes when relevant. |
-| `dotdoctor --sysup` | Check update-related findings, then run the sequential update workflow when needed. |
-| `dotdoctor --fix` | Check system hygiene and prompt for confirmation before each supported action. |
+| Mode | Action | Privileges |
+| :--- | :--- | :--- |
+| `dotdoctor` | Parallel diagnostic scan across all checks; offers updates or fixes if findings are detected. | Regular user (read-only) |
+| `dotdoctor --sysup` | Guarded system upgrade: pre-update snapshot, mirror refresh, `pacman -Syu`, AUR, Flatpaks. | Root / `sudo` (prompts up front) |
+| `dotdoctor --fix` | Interactive maintenance: clean pacman cache, remove orphans, clean Flatpaks, reset failed units. | Regular user (`sudo` per action) |
 
-The audit does not install packages or start repairs. Follow-up update/fix
-prompts default to **yes**; enter `n` to keep the run diagnostic-only. `--sysup` runs
-noninteractive package transactions after its checks. A configured snapshot is
-created before updating; if snapshot creation fails, the update stops. Missing
-snapshot tooling is reported as `SKIP`.
+> [!IMPORTANT]
+> **Prompt defaults:** Interactive prompts (such as `"Update everything now? [Y/n]"` and auto-fix actions) default to **Yes** (`[Y/n]`). Pressing **Enter** immediately proceeds with the action. Enter `n` or press `Ctrl+C` to decline or keep the execution diagnostic-only.
 
-Use `-a` / `--all` to show all checks including passed ones, `-v` to expand findings, `--help` for options, and `dotdoctor version` for the
-installed version. During an audit, **Ctrl+C** cleanly stops running diagnostic processes
-and restores your terminal.
+### Common Options
+
+* `-a`, `--all`: Display all checks, including passed (`PASS`) ones.
+* `-v`, `--verbose`: Show detailed findings, command outputs, and package version upgrade lists.
+* `-d`, `--disable-check <id>`: Exclude specific check IDs for this run (can be repeated, e.g. `-d sys.firmware`).
+* `-c`, `--config <path>`: Load a custom YAML configuration file.
+* `-V`, `--version`: Print DotDoctor version and exit (or run `dotdoctor version`).
+* `-h`, `--help`: Show full command-line help and usage examples.
+
+During an audit, **Ctrl+C** cleanly stops running background diagnostic processes and restores terminal state.
 
 <details>
 <summary>Export a report or exclude a check</summary>
