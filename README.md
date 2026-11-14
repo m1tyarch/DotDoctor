@@ -92,6 +92,15 @@ Choose an explicit mode when you already know the next step:
 
 During an audit, **Ctrl+C** cleanly stops running background diagnostic processes and restores terminal state.
 
+### Upgrade Workflow (`--sysup`)
+
+When running `dotdoctor --sysup`:
+1. **Pre-flight verification:** Caches `sudo` credentials, checks HTTPS connectivity, and verifies disk space on `/` and `/boot`. If network or disk checks fail, updates abort before changes occur.
+2. **Pre-update snapshot:** Detects `snapper` or `timeshift`. If configured, a snapshot is created. If snapshot creation fails, the update halts immediately (code 2). If no snapshot tool is found, this step is marked `SKIP` and updates proceed.
+3. **Sequential transactions:** Refreshes mirrors (`cachyos-rate-mirrors` or `reflector`), verifies keyring packages, runs `pacman -Syu`, updates AUR packages (`paru` or `yay`), updates Flatpaks, cleans package caches (`paccache`), and checks firmware updates (`fwupd`).
+4. **Failure handling:** If a transaction fails, subsequent mutations abort, failure counts are reported, and rollback instructions are displayed (`sudo snapper rollback` or `sudo timeshift --restore`).
+5. **Post-flight checks and `.pacnew`:** Scans `/etc` for new `.pacnew` files and prints review reminders (`pacdiff`). Verifies systemd unit statuses and checks whether a kernel update requires a reboot.
+
 <details>
 <summary>Export a report or exclude a check</summary>
 
