@@ -125,22 +125,32 @@ DotDoctor uses standard exit codes suitable for CI/CD and shell scripting:
 
 ## Configure
 
-DotDoctor discovers available system tools and uses built-in defaults.
-To adjust checks or connect an existing maintenance job, start with
-[dotdoctor.example.yml](dotdoctor.example.yml) and specify your configuration:
+DotDoctor discovers available system tools automatically and works out of the box with built-in defaults.
+
+To customize check intervals, set disk thresholds, or configure backups, copy [dotdoctor.example.yml](dotdoctor.example.yml) to your configuration path:
 
 ```bash
-dotdoctor --config /path/to/config.yml
+mkdir -p ~/.config/dotdoctor
+cp dotdoctor.example.yml ~/.config/dotdoctor/config.yml
 ```
 
-* **Backups:** Backup monitoring is opt-in: without a configured adapter, `sys.backup` is omitted. Backups are not created automatically; snapshots do not replace a verified backup.
-* **Optional Tools:** Utilities like `arch-audit` or `smartctl` expand check coverage when installed. A clean report reflects the checks performed, not every conceivable system failure.
-* **Statuses:** `WARN` and `FAIL` indicate issues requiring attention. An active timer without completion history displays a neutral `SKIP` (details visible via `-v` or JSON) and is counted separately from passed checks.
+### Configuration Search Precedence
 
-See [Configuration and maintenance](docs/reference.md#configuration) for details on
-file precedence, check intervals, timers, and the backup adapter.
+DotDoctor looks for configuration in the following order:
+1. Explicit CLI argument: `--config <path>` or `-c <path>`.
+2. Environment variable: `DOTDOCTOR_CONFIG=/path/to/config.yml`.
+3. User XDG configuration: `~/.config/dotdoctor/config.yml` (or `config.yaml`).
+4. System-wide configuration: `/etc/dotdoctor/config.yml` (or `config.yaml`).
+5. Built-in defaults (used if no configuration file is found).
+
+### Notable Configuration Settings
+
+* **Backups:** Backup monitoring is opt-in (`sys.backup`): without a configured adapter command, `sys.backup` is omitted. Backups are not created automatically; snapshots do not replace external backups.
+* **Optional Tools:** Utilities like `arch-audit`, `smartctl`, `btrfs-progs`, or `snapper` expand check coverage when installed.
+* **Check Statuses:** `WARN` and `FAIL` indicate actionable issues. An active systemd timer without previous run history displays a neutral `SKIP` (details visible via `-v` or `--json`) and is tracked separately from passed checks.
+
+See [Configuration reference](docs/reference.md#configuration) for complete schema documentation and backup adapter examples.
 
 ## Project
 
-[Reference](docs/reference.md) · [Contributing](CONTRIBUTING.md) ·
-[Changelog](CHANGELOG.md) · [Release checklist](RELEASE_CHECKLIST.md) · [MIT license](LICENSE)
+[Reference](docs/reference.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [MIT License](LICENSE)
