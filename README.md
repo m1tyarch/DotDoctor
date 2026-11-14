@@ -78,8 +78,8 @@ Choose an explicit mode when you already know the next step:
 | `dotdoctor --sysup` | Guarded system upgrade: pre-update snapshot, mirror refresh, `pacman -Syu`, AUR, Flatpaks. | Root / `sudo` (prompts up front) |
 | `dotdoctor --fix` | Interactive maintenance: clean pacman cache, remove orphans, clean Flatpaks, reset failed units. | Regular user (`sudo` per action) |
 
-> [!IMPORTANT]
-> **Prompt defaults:** Interactive prompts (such as `"Update everything now? [Y/n]"` and auto-fix actions) default to **Yes** (`[Y/n]`). Pressing **Enter** immediately proceeds with the action. Enter `n` or press `Ctrl+C` to decline or keep the execution diagnostic-only.
+> [!NOTE]
+> **Prompt defaults:** For system safety, interactive prompts (such as `"Update everything now? [y/N]"` and package removal actions) default to **No** (`[y/N]`). Pressing **Enter** without typing `y` safely cancels or keeps the execution diagnostic-only. Type `y` and press **Enter** to proceed with the action.
 
 ### Common Options
 

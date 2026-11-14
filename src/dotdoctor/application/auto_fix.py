@@ -298,7 +298,7 @@ class InteractiveAutoFixer:
             prompt = (
                 "Remove this package now?" if count == 1 else f"Remove these {count} packages now?"
             )
-            if not typer.confirm(prompt, default=True):
+            if not typer.confirm(prompt, default=False):
                 return FixOutcome(False, "Removal declined.")
         except (typer.Abort, EOFError):
             return FixOutcome(False, "Removal declined.")

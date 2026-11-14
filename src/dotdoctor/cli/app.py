@@ -199,7 +199,7 @@ def _can_prompt() -> bool:
     return (sys.stdin.isatty() and sys.stdout.isatty()) or "PYTEST_CURRENT_TEST" in os.environ
 
 
-def _safe_confirm(prompt: str, default: bool = True) -> bool:
+def _safe_confirm(prompt: str, default: bool = False) -> bool:
     if not _can_prompt():
         return False
     try:
@@ -539,7 +539,7 @@ def _system_dry_run_impl(
 
     if has_updates and _can_prompt():
         console.print()
-        if _safe_confirm("Update everything now?", default=True):
+        if _safe_confirm("Update everything now?", default=False):
             console.print()
             console.print(format_header("system update"))
             console.print()
@@ -571,7 +571,7 @@ def _system_dry_run_impl(
     if has_issues and _can_prompt():
         fixer = InteractiveAutoFixer(console, config=loaded_cfg)
         if any(fixer.can_fix(result) for result in report.results) and _safe_confirm(
-            "Apply fixes for detected issues now?", default=True
+            "Apply fixes for detected issues now?", default=False
         ):
             report = fixer.apply(report, context)
 
