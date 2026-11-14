@@ -159,6 +159,22 @@ class MaintenanceState:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 json.dump(data, stream)
             os.replace(name, self.path)
+            self._fix_ownership(self.path)
         finally:
             if os.path.exists(name):
                 os.unlink(name)
+
+    @staticmethod
+    def _fix_ownership(path: Path) -> None:
+        if os.geteuid() == 0:
+            sudo_uid = os.environ.get("SUDO_UID")
+            sudo_gid = os.environ.get("SUDO_GID")
+            if sudo_uid is not None and sudo_gid is not None:
+                try:
+                    uid = int(sudo_uid)
+                    gid = int(sudo_gid)
+                    os.chown(path, uid, gid)
+                    if path.parent.exists():
+                        os.chown(path.parent, uid, gid)
+                except (OSError, ValueError):
+                    pass

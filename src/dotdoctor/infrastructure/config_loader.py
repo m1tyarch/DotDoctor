@@ -12,35 +12,39 @@ class ConfigError(Exception):
 
 
 def load_config(config_path: Path | None = None) -> DotDoctorConfig:
+    explicit = True
     if config_path is None:
         env_path = os.environ.get("DOTDOCTOR_CONFIG")
         if env_path:
             config_path = Path(env_path)
         else:
+            explicit = False
             xdg_config = os.environ.get("XDG_CONFIG_HOME")
             base_dir = Path(xdg_config) if xdg_config else Path.home() / ".config"
             candidates = [
-                Path("dotdoctor.yml"),
-                Path("dotdoctor.yaml"),
                 base_dir / "dotdoctor" / "config.yml",
                 base_dir / "dotdoctor" / "config.yaml",
+                Path("/etc/dotdoctor/config.yml"),
+                Path("/etc/dotdoctor/config.yaml"),
             ]
             for cand in candidates:
                 if cand.exists():
                     config_path = cand
                     break
-            if config_path is None:
-                config_path = Path("dotdoctor.yml")
 
     config = default_config()
 
-    if config_path.exists():
+    if config_path is not None:
+        if not config_path.exists():
+            if explicit:
+                raise ConfigError(f"Config file not found: {config_path}")
+            return apply_env_overrides(config)
         try:
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             if raw is None:
                 raw = {}
             config = DotDoctorConfig.model_validate(raw)
-        except (yaml.YAMLError, ValidationError) as exc:
+        except (yaml.YAMLError, ValidationError, OSError) as exc:
             raise ConfigError(f"Invalid config at {config_path}: {exc}") from exc
 
     return apply_env_overrides(config)
