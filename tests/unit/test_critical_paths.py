@@ -78,24 +78,26 @@ def test_sysup_aborts_on_snapshot_failure(test_context: ScanContext) -> None:
         config=DotDoctorConfig(),
     )
 
-    with patch("os.geteuid", return_value=0):
-        with patch("dotdoctor.application.system_update.detect_disk_space_status") as mock_disk:
-            mock_disk.return_value = DiskSpaceStatus(
-                root_free_bytes=10000000000,
-                boot_free_bytes=1000000000,
-                severity=Severity.PASS,
-                message="enough space",
-                remediation=None,
-            )
+    with (
+        patch("os.geteuid", return_value=0),
+        patch("dotdoctor.application.system_update.detect_disk_space_status") as mock_disk,
+    ):
+        mock_disk.return_value = DiskSpaceStatus(
+            root_free_bytes=10000000000,
+            boot_free_bytes=1000000000,
+            severity=Severity.PASS,
+            message="enough space",
+            remediation=None,
+        )
 
-            workflow._run_step = MagicMock(return_value=(True, "fail", False))
-            workflow._refresh_mirrors = MagicMock()
+        workflow._run_step = MagicMock(return_value=(True, "fail", False))
+        workflow._refresh_mirrors = MagicMock()
 
-            code = workflow.run(test_context, console)
-            assert code == 2
-            workflow._refresh_mirrors.assert_not_called()
-            output = console.export_text()
-            assert "Update aborted: pre-update snapshot failed" in output
+        code = workflow.run(test_context, console)
+        assert code == 2
+        workflow._refresh_mirrors.assert_not_called()
+        output = console.export_text()
+        assert "Update aborted: pre-update snapshot failed" in output
 
 
 def test_pacman_db_lock_detection(
@@ -149,29 +151,28 @@ def test_sysup_partial_failure_exit_code(test_context: ScanContext) -> None:
 
     workflow._run_step = mock_run_step
 
-    with patch("os.geteuid", return_value=0):
-        with patch("dotdoctor.application.system_update.detect_disk_space_status") as mock_disk:
-            mock_disk.return_value = DiskSpaceStatus(
-                root_free_bytes=10000000000,
-                boot_free_bytes=1000000000,
-                severity=Severity.PASS,
-                message="enough space",
-                remediation=None,
-            )
+    with (
+        patch("os.geteuid", return_value=0),
+        patch("dotdoctor.application.system_update.detect_disk_space_status") as mock_disk,
+    ):
+        mock_disk.return_value = DiskSpaceStatus(
+            root_free_bytes=10000000000,
+            boot_free_bytes=1000000000,
+            severity=Severity.PASS,
+            message="enough space",
+            remediation=None,
+        )
 
-            valid_managers = {"pacman", "flatpak"}
-            with patch(
+        valid_managers = {"pacman", "flatpak"}
+        with (
+            patch(
                 "shutil.which",
                 lambda name: "/usr/bin/" + name if name in valid_managers else None,
-            ):
-                with patch(
-                    "dotdoctor.application.system_update.detect_pacnew_files", return_value=[]
-                ):
-                    with patch(
-                        "dotdoctor.application.system_update.MaintenanceChecks.run",
-                        return_value=[],
-                    ):
-                        code = workflow.run(test_context, console)
+            ),
+            patch("dotdoctor.application.system_update.detect_pacnew_files", return_value=[]),
+            patch("dotdoctor.application.system_update.MaintenanceChecks.run", return_value=[]),
+        ):
+            code = workflow.run(test_context, console)
 
     assert code == 2
 
@@ -278,3 +279,43 @@ def test_news_worker_handles_failure() -> None:
     )
     assert "[]" in result.stdout
     assert result.returncode == 1
+
+
+def test_sysup_aborts_when_backup_skipped_under_root_and_required(
+    test_context: ScanContext,
+) -> None:
+    """--sysup must abort with code 2 when root skips backup check and required."""
+    from dotdoctor.domain.config import BackupConfig, MaintenanceConfig
+
+    console = Console(record=True)
+    cfg = DotDoctorConfig(
+        maintenance=MaintenanceConfig(
+            backup=BackupConfig(
+                service="backup.service",
+                status_command=["backup-status"],
+                required_before_upgrade=True,
+            )
+        )
+    )
+    workflow = SystemUpgradeService(
+        is_online_fn=lambda: True,
+        snapshot_tool_fn=lambda: None,
+        config=cfg,
+    )
+
+    with (
+        patch("os.geteuid", return_value=0),
+        patch("dotdoctor.application.system_update.detect_disk_space_status") as mock_disk,
+    ):
+        mock_disk.return_value = DiskSpaceStatus(
+            root_free_bytes=10000000000,
+            boot_free_bytes=1000000000,
+            severity=Severity.PASS,
+            message="enough space",
+            remediation=None,
+        )
+        code = workflow.run(test_context, console)
+        assert code == 2
+        output = console.export_text()
+        assert "critical preflight check 'sys.backup' failed" in output
+        assert "backup status_command skipped when running with root privileges" in output

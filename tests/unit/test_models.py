@@ -11,7 +11,20 @@ def test_scan_report_summary_and_exit_code_warn() -> None:
     )
 
     assert report.summary == {"PASS": 1, "OUTD": 0, "WARN": 1, "FAIL": 0, "SKIP": 0}
-    assert report.exit_code == 0
+    assert report.exit_code == 1
+
+
+def test_scan_report_summary_and_exit_code_outd() -> None:
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(check_id="a", severity=Severity.PASS, message="ok"),
+            CheckResult(check_id="b", severity=Severity.OUTD, message="outdated"),
+        ],
+    )
+
+    assert report.summary == {"PASS": 1, "OUTD": 1, "WARN": 0, "FAIL": 0, "SKIP": 0}
+    assert report.exit_code == 1
 
 
 def test_scan_report_exit_code_fail_takes_priority() -> None:

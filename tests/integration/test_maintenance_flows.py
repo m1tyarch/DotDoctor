@@ -1,5 +1,6 @@
 import io
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -316,7 +317,7 @@ def test_residual_vulnerability_is_reported_after_upgrade(monkeypatch, environme
     monkeypatch.setattr(
         m.MaintenanceChecks,
         "run",
-        lambda self, context, ids: ([security] if ids == m.POSTFLIGHT_IDS else []),
+        lambda self, context, ids: [security] if ids == m.POSTFLIGHT_IDS else [],
     )
     output = io.StringIO()
     assert upgrade().run(context, Console(file=output)) == 2
@@ -628,7 +629,7 @@ def test_package_review_prompts_inherit_the_terminal(monkeypatch, environment, c
     error, _, changed = upgrade()._run_step(cmd, Console(file=io.StringIO()), "Review transaction")
     assert not error
     assert changed
-    assert options == [{"check": False}]
+    assert options == [{"check": False, "env": {**os.environ, "LC_ALL": "C"}}]
 
 
 @pytest.mark.parametrize("helper,flags", [("paru", ["--rebuild=yes"]), ("yay", ["--rebuild"])])

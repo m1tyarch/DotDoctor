@@ -7,7 +7,7 @@ from dotdoctor import __version__
 
 
 class Severity(StrEnum):
-    PASS = "PASS"
+    PASS = "PASS"  # nosec: B105  # audit check status label, not password
     OUTD = "OUTD"
     WARN = "WARN"
     FAIL = "FAIL"
@@ -63,6 +63,8 @@ class ScanReport(BaseModel):
         summary = self.summary
         if summary["FAIL"] > 0:
             return 2
+        if summary["WARN"] > 0 or summary["OUTD"] > 0:
+            return 1
         return 0
 
     def get_result(self, check_id: str) -> CheckResult | None:

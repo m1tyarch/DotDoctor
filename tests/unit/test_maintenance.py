@@ -1,7 +1,9 @@
 import json
+import os
 import subprocess
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from rich.console import Console
@@ -136,6 +138,53 @@ def test_future_backup_not_accepted(monkeypatch):
         m, "read_json", lambda *args: {"completed_at": NOW + 3600, "verified": True}
     )
     assert checked(checks, "sys.backup", checks.backup).severity == Severity.WARN
+
+
+def test_backup_status_command_invalid():
+    cfg = BackupConfig.model_construct(
+        service="backup.service",
+        scope="system",
+        status_command=["   "],
+        max_age_days=7,
+        required_before_upgrade=True,
+    )
+    checks = m.MaintenanceChecks(DotDoctorConfig(maintenance=MaintenanceConfig(backup=cfg)))
+    result = checks.backup()
+    assert result.severity == Severity.WARN
+    assert "status_command must be a non-empty list of non-empty strings" in result.message
+
+
+def test_backup_skipped_when_running_as_root(monkeypatch):
+    config = DotDoctorConfig(
+        maintenance=MaintenanceConfig(
+            backup=BackupConfig(
+                service="backup.service",
+                status_command=["backup-status"],
+                required_before_upgrade=True,
+            )
+        )
+    )
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    checks = m.MaintenanceChecks(config)
+    result = checks.backup()
+    assert result.severity == Severity.WARN
+    assert "skipped when running with root privileges" in result.message
+    assert result.details["blocks_upgrade"] is True
+
+
+def test_backup_command_runs_without_shell(monkeypatch):
+    from dotdoctor.infrastructure.audit_processes import capture
+
+    captured_kwargs: list[dict[str, Any]] = []
+
+    def mock_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured_kwargs.append(kwargs)
+        return subprocess.CompletedProcess(args[0], 0, "{}", "")
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    capture(["backup-status"], 5)
+    assert len(captured_kwargs) == 1
+    assert captured_kwargs[0].get("shell") is not True
 
 
 def test_active_timer_with_failed_service_is_not_healthy(monkeypatch):
@@ -953,6 +1002,29 @@ def test_rebuild_parses_actual_package_repository_columns(monkeypatch):
     assert m.MaintenanceChecks().rebuild().details["rebuild_packages"] == ["custom"]
 
 
+def test_rebuild_parsing_detector_formats(monkeypatch):
+    foreign_pkgs = "pkg1\npkg2\npkg3\npkg4\npkg5\npkg6\n"
+    detector_output = (
+        "foreign\tpkg1\n"
+        "ldd\tpkg2\n"
+        "python\tpkg3\n"
+        "perl\tpkg4\n"
+        "pkg5\tforeign\n"
+        "pkg6\n"
+        "foreign\tpkg1\n"  # duplicate should be ignored
+        "foreign\tunknown-pkg\n"  # not in foreign_pkgs
+    )
+    monkeypatch.setattr(m.shutil, "which", lambda name: "/bin/checkrebuild")
+    monkeypatch.setattr(
+        m,
+        "capture",
+        lambda cmd, *args: response(foreign_pkgs if cmd[0] == "pacman" else detector_output),
+    )
+    result = m.MaintenanceChecks().rebuild()
+    assert result.severity == Severity.WARN
+    assert result.details["rebuild_packages"] == ["pkg1", "pkg2", "pkg3", "pkg4", "pkg5", "pkg6"]
+
+
 def test_rebuild_no_foreign_packages_code_1_is_pass(monkeypatch):
     monkeypatch.setattr(m, "capture", lambda cmd, *args: response("", 1))
     result = m.MaintenanceChecks().rebuild()
@@ -993,12 +1065,11 @@ def test_reader_never_requests_stdin_and_sets_locale(monkeypatch):
     assert calls[0]["env"]["LC_ALL"] == "C"
 
 
-def test_corrupt_state_not_overwritten(tmp_path):
+def test_corrupt_state_reset_on_acknowledge(tmp_path):
     state = readers.MaintenanceState(tmp_path / "state.json")
     state.path.write_text("bad")
-    with pytest.raises(ValueError):
-        state.acknowledge_news(["https://archlinux.org/news/test/"])
-    assert state.path.read_text() == "bad"
+    state.acknowledge_news(["https://archlinux.org/news/test/"])
+    assert state.read() == {"news": ["https://archlinux.org/news/test/"]}
 
 
 @pytest.mark.parametrize("failure", ["none", "missing", "files"])

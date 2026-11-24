@@ -7,11 +7,13 @@ import re
 import shlex
 import shutil
 import subprocess
+import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
-from xml.etree.ElementTree import ParseError
+from xml.etree.ElementTree import ParseError  # nosec: B405
 
 from dotdoctor.domain.config import DotDoctorConfig, TimerConfig
 from dotdoctor.domain.context import ScanContext
@@ -39,6 +41,7 @@ PREFLIGHT_IDS = frozenset(
     }
 )
 POSTFLIGHT_IDS = frozenset({"sys.security", "sys.rebuild", "sys.integrity", "sys.package-db"})
+MAINTENANCE_CHECK_IDS = frozenset(PREFLIGHT_IDS | POSTFLIGHT_IDS | {"sys.timers", "sys.trim"})
 # Weekly timer plus randomized delay, scheduling accuracy and a day of grace.
 TRIM_MAX_AGE_DAYS = 8
 
@@ -58,10 +61,19 @@ def timestamp(value: str | int | float) -> float:
         return float(value)
     if not value or value in {"n/a", "0"}:
         raise ValueError("no completed execution recorded")
+    val = value.strip()
+    if val.startswith("@"):
+        try:
+            parsed = float(val[1:])
+            if not math.isfinite(parsed):
+                raise ValueError("invalid completion timestamp")
+            return parsed
+        except ValueError:
+            raise ValueError(f"invalid completion timestamp: {value}") from None
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
     except ValueError:
-        result = capture(["date", "--date", value, "+%s"])
+        result = capture(["date", "--date", val, "+%s"])
         if result.returncode:
             raise ValueError("invalid completion timestamp") from None
         return float(result.stdout.strip())
@@ -107,12 +119,32 @@ def mounted_filesystems() -> list[dict[str, Any]]:
     )
     if not isinstance(data, dict) or not isinstance(data.get("filesystems"), list):
         raise ValueError("invalid mount information")
-    return data["filesystems"]
+    return [fs for fs in data["filesystems"] if isinstance(fs, dict)]
 
 
 class MaintenanceChecks:
     def __init__(self, config: DotDoctorConfig | None = None) -> None:
         self.config = config or DotDoctorConfig()
+        self._cache_lock = threading.Lock()
+        self._mounts_cache: list[dict[str, Any]] | None = None
+        self._lsblk_cache: dict[str, Any] | None = None
+
+    def _get_mounted_filesystems(self) -> list[dict[str, Any]]:
+        with self._cache_lock:
+            if self._mounts_cache is None:
+                self._mounts_cache = mounted_filesystems()
+            return self._mounts_cache
+
+    def _get_lsblk_json(self) -> dict[str, Any]:
+        with self._cache_lock:
+            if self._lsblk_cache is None:
+                data = read_json(
+                    ["lsblk", "--json", "--bytes", "--output", "PATH,TYPE,DISC-MAX,MOUNTPOINTS"]
+                )
+                if not isinstance(data, dict):
+                    data = {}
+                self._lsblk_cache = data
+            return self._lsblk_cache
 
     def registrations(
         self, context: ScanContext
@@ -143,6 +175,9 @@ class MaintenanceChecks:
             if shutil.which("btrfs"):
                 checks.append(("sys.btrfs", "Btrfs health and scrub", self.btrfs))
             checks.append(("sys.mounts", "Filesystem capacity", self.mounts))
+        for cid, _, _ in checks:
+            if cid not in MAINTENANCE_CHECK_IDS:
+                raise ValueError(f"Unregistered maintenance check_id: {cid}")
         return [(cid, label, self._checked(cid, fn)) for cid, label, fn in checks]
 
     def _checked(self, cid: str, fn: Callable[[], CheckResult]) -> Callable[[], CheckResult]:
@@ -173,9 +208,19 @@ class MaintenanceChecks:
 
     def run(self, context: ScanContext, ids: frozenset[str]) -> list[CheckResult]:
         disabled = {cid.replace(":", ".") for cid in self.config.disabled_checks}
-        return [
-            fn() for cid, _, fn in self.registrations(context) if cid in ids and cid not in disabled
+        selected = [
+            (cid, fn)
+            for cid, _, fn in self.registrations(context)
+            if cid in ids and cid not in disabled
         ]
+        if not selected:
+            return []
+        if len(selected) == 1:
+            return [selected[0][1]()]
+
+        with ThreadPoolExecutor(max_workers=len(selected)) as executor:
+            futures = [executor.submit(fn) for _, fn in selected]
+            return [future.result() for future in futures]
 
     def keyring(self) -> CheckResult:
         cid = "sys.keyring"
@@ -228,7 +273,7 @@ class MaintenanceChecks:
                 f"{len(items)} unread Arch upgrade notices",
                 "https://archlinux.org/news/",
                 notices=items,
-                items=[f'{item["title"]} {item["url"]}' for item in items],
+                items=[f"{item['title']} {item['url']}" for item in items],
                 requires_review=True,
             )
         return _result("sys.news", Severity.PASS, "current Arch notices acknowledged")
@@ -242,6 +287,29 @@ class MaintenanceChecks:
                 Severity.SKIP,
                 "backup monitoring is not configured",
                 verified=False,
+            )
+        if (
+            not isinstance(config.status_command, list)
+            or not config.status_command
+            or not all(isinstance(arg, str) and arg.strip() for arg in config.status_command)
+        ):
+            return _result(
+                cid,
+                Severity.WARN,
+                "backup status_command must be a non-empty list of non-empty strings",
+                verified=False,
+                blocks_upgrade=config.required_before_upgrade,
+            )
+        if os.geteuid() == 0:
+            return _result(
+                cid,
+                Severity.WARN,
+                "backup status_command skipped when running with root privileges (sudo)",
+                remediation=(
+                    "verify backup freshness as regular user or disable required_before_upgrade"
+                ),
+                verified=False,
+                blocks_upgrade=config.required_before_upgrade,
             )
         service = properties(config.service, config.scope)
         info = read_json(config.status_command)
@@ -406,9 +474,7 @@ class MaintenanceChecks:
 
     def trim(self) -> CheckResult:
         cid = "sys.trim"
-        data = read_json(
-            ["lsblk", "--json", "--bytes", "--output", "PATH,TYPE,DISC-MAX,MOUNTPOINTS"]
-        )
+        data = self._get_lsblk_json()
         if not isinstance(data, dict) or "blockdevices" not in data:
             raise ValueError("block device information unavailable")
         devices = _devices(data["blockdevices"])
@@ -423,7 +489,7 @@ class MaintenanceChecks:
             return _result(
                 cid, Severity.PASS, "no mounted discard-capable devices detected", applicable=False
             )
-        fs = mounted_filesystems()
+        fs = self._get_mounted_filesystems()
         continuous = {
             m["target"]
             for m in fs
@@ -544,7 +610,7 @@ class MaintenanceChecks:
                 "sudo pacman -Syu smartmontools",
                 verified=False,
             )
-        data = read_json(["lsblk", "--json", "--output", "PATH,TYPE"])
+        data = self._get_lsblk_json()
         disks = [
             d["path"]
             for d in _devices(data.get("blockdevices", []))
@@ -616,7 +682,7 @@ class MaintenanceChecks:
 
     def btrfs(self) -> CheckResult:
         cid = "sys.btrfs"
-        filesystems = [fs for fs in mounted_filesystems() if fs.get("fstype") == "btrfs"]
+        filesystems = [fs for fs in self._get_mounted_filesystems() if fs.get("fstype") == "btrfs"]
         if not filesystems:
             return _result(cid, Severity.PASS, "no mounted Btrfs filesystems", applicable=False)
         if not shutil.which("btrfs"):
@@ -700,7 +766,7 @@ class MaintenanceChecks:
         targets = {"/", "/home", "/var", "/boot", "/boot/efi", "/efi"}
         issues = []
         critical = False
-        filesystems = mounted_filesystems()
+        filesystems = self._get_mounted_filesystems()
         if not any(fs.get("target") == "/" for fs in filesystems):
             raise ValueError("root mount information unavailable")
         for fs in filesystems:
@@ -795,8 +861,8 @@ class MaintenanceChecks:
                 "arch-audit -c",
                 advisories=data,
                 items=[
-                    f'{entry["package"]}: {entry["severity"]} {entry["cves"]}; '
-                    f'fixed version: {entry["fixed_version"] or unspecified}'
+                    f"{entry['package']}: {entry['severity']} {entry['cves']}; "
+                    f"fixed version: {entry['fixed_version'] or unspecified}"
                     for entry in data
                 ],
                 outdated_packages=outdated,
@@ -841,7 +907,8 @@ class MaintenanceChecks:
         if packages:
             # Limit auto-reinstallation to native packages, without guessing foreign provenance.
             native = capture(["pacman", "-Qnq", "--", *packages])
-            official = [p for p in native.stdout.splitlines() if p in packages]
+            packages_set = set(packages)
+            official = [p for p in native.stdout.splitlines() if p in packages_set]
             return _result(
                 "sys.integrity",
                 Severity.FAIL,
@@ -877,12 +944,19 @@ class MaintenanceChecks:
         if result.returncode:
             raise ValueError(result.stderr.strip() or "rebuild check failed")
         entries = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        candidates = [
-            line.split()[0]
-            for line in entries
-            if PACKAGE_RE.fullmatch(line.split()[0])
-            and line.split()[0] in foreign.stdout.splitlines()
-        ]
+        foreign_set = {line.strip() for line in foreign.stdout.splitlines() if line.strip()}
+        candidates: list[str] = []
+        for line in entries:
+            parts = line.split()
+            if not parts:
+                continue
+            pkg = (
+                parts[1]
+                if len(parts) >= 2 and parts[0] in {"foreign", "ldd", "python", "perl"}
+                else parts[0]
+            )
+            if PACKAGE_RE.fullmatch(pkg) and pkg in foreign_set and pkg not in candidates:
+                candidates.append(pkg)
         if entries:
             return _result(
                 cid,

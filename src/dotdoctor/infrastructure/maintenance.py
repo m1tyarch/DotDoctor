@@ -8,8 +8,9 @@ import tempfile
 import urllib.request
 from pathlib import Path
 from typing import Any
-from xml.etree import ElementTree
+from xml.etree import ElementTree  # nosec: B405
 
+from dotdoctor import __version__
 from dotdoctor.infrastructure.audit_processes import capture as capture_command
 from dotdoctor.infrastructure.audit_processes import current_session
 
@@ -58,7 +59,9 @@ def properties(unit: str, scope: str = "system", timer: bool = False) -> dict[st
     if timer:
         names += ["LastTriggerUSec", "NextElapseUSecRealtime", "Triggers", "UnitFileState"]
     args = ["systemctl"] + (["--user"] if scope == "user" else [])
-    result = capture([*args, "show", unit, *[f"--property={name}" for name in names]])
+    result = capture(
+        [*args, "show", unit, "--timestamp=unix", *[f"--property={name}" for name in names]]
+    )
     if result.returncode:
         raise ValueError(result.stderr.strip() or "systemd properties unavailable")
     values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
@@ -118,12 +121,14 @@ def fetch_news() -> list[dict[str, str]]:
         if not isinstance(data, list) or not data:
             raise ValueError("invalid Arch news response")
         return data
-    request = urllib.request.Request(NEWS_URL, headers={"User-Agent": "DotDoctor/0.1"})
-    with urllib.request.urlopen(request, timeout=10) as response:
+    if not NEWS_URL.startswith("https://"):
+        raise ValueError("Invalid news URL scheme")
+    request = urllib.request.Request(NEWS_URL, headers={"User-Agent": f"DotDoctor/{__version__}"})
+    with urllib.request.urlopen(request, timeout=10) as response:  # nosec: B310
         payload = response.read(1024 * 1024 + 1)
     if len(payload) > 1024 * 1024:
         raise ValueError("news feed exceeds size limit")
-    root = ElementTree.fromstring(payload)
+    root = ElementTree.fromstring(payload)  # nosec: B314
     if root.tag != "rss" or root.find("channel") is None:
         raise ValueError("invalid Arch news feed")
     items = []
@@ -137,9 +142,30 @@ def fetch_news() -> list[dict[str, str]]:
     return items
 
 
+def _resolve_user_home() -> Path:
+    sudo_user = os.environ.get("SUDO_USER")
+    if os.geteuid() == 0 and sudo_user and sudo_user != "root":
+        try:
+            import pwd
+
+            return Path(pwd.getpwnam(sudo_user).pw_dir)
+        except (KeyError, OSError):
+            pass
+    return Path.home()
+
+
 class MaintenanceState:
     def __init__(self, path: Path | None = None) -> None:
-        base = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state")))
+        user_home = _resolve_user_home()
+        xdg_state = os.environ.get("XDG_STATE_HOME")
+        if (
+            os.geteuid() == 0
+            and os.environ.get("SUDO_USER") not in (None, "", "root")
+            and xdg_state
+            and xdg_state.startswith("/root")
+        ):
+            xdg_state = None
+        base = Path(xdg_state) if xdg_state else user_home / ".local/state"
         self.path = path or base / "dotdoctor" / "maintenance.json"
 
     def read(self) -> dict[str, Any]:
@@ -151,7 +177,10 @@ class MaintenanceState:
         return data
 
     def acknowledge_news(self, urls: list[str]) -> None:
-        data = self.read()
+        try:
+            data = self.read()
+        except (ValueError, OSError):
+            data = {}
         data["news"] = list(dict.fromkeys([*data.get("news", []), *urls]))[-200:]
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(dir=self.path.parent, prefix=".maintenance-")

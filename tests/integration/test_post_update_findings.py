@@ -44,7 +44,17 @@ def flow(monkeypatch):
 
     def fix(self, report, context):
         state.fixes.append(report)
-        return report
+        return ScanReport(
+            profile=report.profile,
+            results=[
+                CheckResult(
+                    check_id=r.check_id,
+                    severity=Severity.PASS,
+                    message=f"fixed {r.check_id}",
+                )
+                for r in report.results
+            ],
+        )
 
     monkeypatch.setattr(SystemDryRunService, "build_tasks", lambda *args, **kwargs: [])
     monkeypatch.setattr(SystemDryRunService, "run_with_progress", initial)
@@ -90,7 +100,7 @@ def test_clean_or_neutral_rescan_never_offers_fixes(flow, severity):
         CheckResult(check_id="sys.orphans", severity=severity, message="fresh result")
     ]
     result = CliRunner().invoke(app, [], input="y\n")
-    assert result.exit_code == 0
+    assert result.exit_code == (1 if severity == Severity.OUTD else 0)
     assert "Apply fixes" not in result.output
     assert "Post-update findings:" not in result.output
     assert flow.upgrades == flow.rescans == 1
@@ -128,7 +138,7 @@ def test_declining_fixes_keeps_fresh_findings_in_json(flow, tmp_path):
     ]
     path = tmp_path / "report.json"
     result = CliRunner().invoke(app, ["--json-output", str(path)], input="y\nn\n")
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     assert result.output.index("new kernel requires reboot") < result.output.index("Apply fixes")
     assert "history unavailable" not in result.output
     assert flow.fixes == []
@@ -180,7 +190,7 @@ def test_reboot_followup_uses_actual_kernel_state_not_pending_package_names(
     monkeypatch.setattr(SystemUpgradeService, "run", upgrade)
     monkeypatch.setattr(SystemDryRunService, "run", rescan)
     result = CliRunner().invoke(app, [], input="y\nn\n")
-    assert result.exit_code == 0
+    assert result.exit_code == (1 if kernel_changed else 0)
     assert "Critical updates" not in result.output
     assert "reboot will be recommended" not in result.output
     assert "available (reboot required" not in result.output

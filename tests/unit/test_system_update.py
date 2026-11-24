@@ -279,7 +279,7 @@ def test_system_dry_run_firmware_detects_explicit_version_transition(
             return SimpleNamespace(stdout="", returncode=0)
         if command[:2] == ["fwupdmgr", "get-updates"]:
             return SimpleNamespace(
-                stdout=("Device: Sample Device\n" "Current version: 1.2.3\n" "1.2.3 -> 1.2.4\n"),
+                stdout=("Device: Sample Device\nCurrent version: 1.2.3\n1.2.3 -> 1.2.4\n"),
                 returncode=0,
             )
         raise AssertionError(f"Unexpected command: {command}")
@@ -892,7 +892,7 @@ def test_system_dry_run_offline_skips_network_checks(monkeypatch, tmp_path: Path
 
     assert "sys.network" in by_id
     assert by_id["sys.network"].severity is Severity.FAIL
-    assert "internet access unavailable (HTTPS checks failed)" == by_id["sys.network"].message
+    assert by_id["sys.network"].message == "internet access unavailable (HTTPS checks failed)"
     assert "sys.packages" not in by_id
     assert "sys.aur" not in by_id
     assert "sys.flatpak" not in by_id
@@ -1274,7 +1274,7 @@ def test_system_upgrade_with_actual_updates_applied(
             return SimpleNamespace(returncode=0, stderr="", stdout="")
         if command[:1] == ["yay"]:
             stdout = (
-                "Packages (2) linux-6.10.arch1-1 systemd-256-1\n" "Total Installed Size: 150 MiB\n"
+                "Packages (2) linux-6.10.arch1-1 systemd-256-1\nTotal Installed Size: 150 MiB\n"
             )
             return SimpleNamespace(returncode=0, stderr="", stdout=stdout)
         return SimpleNamespace(returncode=0, stderr="", stdout="")
@@ -1519,9 +1519,7 @@ def test_check_arch_packages_does_not_predict_reboot(
         return None
 
     def fake_run(*args, **kwargs):
-        stdout = (
-            f"{first} 1.0-1 -> 1.0-2\n" f"{second} 1.0-1 -> 1.0-2\n" "htop 3.3.0-1 -> 3.3.0-2\n"
-        )
+        stdout = f"{first} 1.0-1 -> 1.0-2\n{second} 1.0-1 -> 1.0-2\nhtop 3.3.0-1 -> 3.3.0-2\n"
         return SimpleNamespace(returncode=0, stderr="", stdout=stdout)
 
     monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", fake_which)
@@ -1548,7 +1546,7 @@ def test_check_aur_packages_does_not_predict_reboot(monkeypatch, tmp_path: Path)
         return None
 
     def fake_run(*args, **kwargs):
-        stdout = "aur/nvidia-dkms 555.58-1 -> 560.35-1\n" "aur/spotify 1:1.2.42-1 -> 1:1.2.45-1\n"
+        stdout = "aur/nvidia-dkms 555.58-1 -> 560.35-1\naur/spotify 1:1.2.42-1 -> 1:1.2.45-1\n"
         return SimpleNamespace(returncode=0, stderr="", stdout=stdout)
 
     monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", fake_which)

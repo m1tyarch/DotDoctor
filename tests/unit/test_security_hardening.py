@@ -121,7 +121,7 @@ def test_system_update_unescaped_error_output_does_not_crash(monkeypatch) -> Non
         'import sys; sys.stderr.write("[/dim][bold]broken markup [ERROR]\\n"); sys.exit(1)',
     ]
 
-    had_error, is_net_fail, had_updates = service._run_step(evil_cmd, fake_console, "Evil step")
+    had_error, _is_net_fail, _had_updates = service._run_step(evil_cmd, fake_console, "Evil step")
     assert had_error is True
     output = fake_console.export_text()
     assert "broken markup [ERROR]" in output

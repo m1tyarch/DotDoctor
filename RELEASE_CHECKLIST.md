@@ -15,7 +15,7 @@ this reusable checklist is not a record of checks performed on a particular tag.
 ## Quality gates
 
 - [ ] `.venv/bin/ruff check .`
-- [ ] `.venv/bin/black --check .`
+- [ ] `.venv/bin/ruff format --check .`
 - [ ] `.venv/bin/mypy src`
 - [ ] `.venv/bin/pytest -v --cov=src/dotdoctor --cov-fail-under=75`
 - [ ] CI green on the exact commit being released. Current CI runs on Python 3.11.

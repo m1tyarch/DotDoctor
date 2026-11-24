@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path
 from typing import Any
 
+import click.exceptions as _click_exceptions
 import typer
 import typer.rich_utils
 from rich.console import Console
@@ -11,7 +14,6 @@ from rich.markup import escape
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
-from typer._click import exceptions as _click_exceptions
 
 from dotdoctor import __version__
 from dotdoctor.application.auto_fix import InteractiveAutoFixer
@@ -195,8 +197,21 @@ def version() -> None:
     console.print(f"dotdoctor {__version__}")
 
 
+_CAN_PROMPT_INJECTED: bool | None = None
+
+
+def set_can_prompt(value: bool | None) -> None:
+    """Explicitly inject interactivity for prompts in tests or programmatic usage."""
+    global _CAN_PROMPT_INJECTED
+    _CAN_PROMPT_INJECTED = value
+
+
 def _can_prompt() -> bool:
-    return (sys.stdin.isatty() and sys.stdout.isatty()) or "PYTEST_CURRENT_TEST" in os.environ
+    if _CAN_PROMPT_INJECTED is not None:
+        return _CAN_PROMPT_INJECTED
+    if getattr(sys.stdin, "__module__", "").startswith(("click.testing", "typer.testing")):
+        return True
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def _safe_confirm(prompt: str, default: bool = False) -> bool:
@@ -333,7 +348,7 @@ def _system_fix_impl(
         cwd=Path.cwd(),
         home=Path.home(),
         path_value=os.environ.get("PATH", ""),
-        shell=os.environ.get("SHELL"),
+        shell=os.environ.get("SHELL"),  # nosec: B604  # ScanContext parameter, not subprocess
     )
     console.print(format_header("fix"))
     console.print()
@@ -413,7 +428,7 @@ def _system_upgrade_impl(
         cwd=Path.cwd(),
         home=Path.home(),
         path_value=os.environ.get("PATH", ""),
-        shell=os.environ.get("SHELL"),
+        shell=os.environ.get("SHELL"),  # nosec: B604  # ScanContext parameter, not subprocess
     )
     console.print(format_header("system update"))
     console.print()
@@ -500,7 +515,7 @@ def _system_dry_run_impl(
         cwd=Path.cwd(),
         home=Path.home(),
         path_value=os.environ.get("PATH", ""),
-        shell=os.environ.get("SHELL"),
+        shell=os.environ.get("SHELL"),  # nosec: B604  # ScanContext parameter, not subprocess
     )
 
     if json_stdout:

@@ -20,7 +20,7 @@ Use focused tests while developing, then run the required checks before submitti
 ```bash
 .venv/bin/pytest -v
 .venv/bin/ruff check .
-.venv/bin/black --check .
+.venv/bin/ruff format --check .
 .venv/bin/mypy src
 ```
 

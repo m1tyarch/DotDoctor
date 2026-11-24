@@ -149,7 +149,7 @@ def test_render_light_list_no_headers_no_frames() -> None:
     # max_status_len = 4 (PASS, WARN, FAIL, OLD)
     # max_id_len = len("sys.packages") = 12
     # prefix = 2 + 4 + 2 + 12 + 2 = 22 spaces
-    pass_line = [line for line in lines if "sys.packages" in line][0]
+    pass_line = next(line for line in lines if "sys.packages" in line)
     assert pass_line.startswith("  PASS  sys.packages  up to date")
     # PASS lines must NOT show remediation
     assert "should not show" not in rendered

@@ -33,7 +33,7 @@ def test_root_default_runs_dry_run_report(monkeypatch) -> None:
 
     result = runner.invoke(app, [], input="n\n")
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     assert "DotDoctor · system" in result.stdout
     assert "sys.packages" in result.stdout
 
@@ -206,10 +206,23 @@ def test_root_prompts_update_everything_when_outd(monkeypatch) -> None:
         console.print("Upgrade completed successfully.")
         return 0
 
+    def fake_rescan(self, context, **kwargs):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.PASS,
+                    message="up to date",
+                )
+            ],
+        )
+
     monkeypatch.setattr(
         "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
         fake_run,
     )
+    monkeypatch.setattr("dotdoctor.application.system_update.SystemDryRunService.run", fake_rescan)
     monkeypatch.setattr(
         "dotdoctor.application.system_update.SystemUpgradeService.run", fake_upgrade
     )
@@ -237,7 +250,16 @@ def test_root_prompts_fixes_when_issues_detected(monkeypatch) -> None:
 
     def fake_apply(self, report, context):
         fixed.append(True)
-        return report
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.cache",
+                    severity=Severity.PASS,
+                    message="cache cleaned",
+                )
+            ],
+        )
 
     monkeypatch.setattr(
         "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
@@ -271,18 +293,50 @@ def test_root_chains_updates_and_fixes(monkeypatch) -> None:
             ],
         )
 
+    def fake_rescan(self, context, **kwargs):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.PASS,
+                    message="up to date",
+                ),
+                CheckResult(
+                    check_id="sys.orphans",
+                    severity=Severity.WARN,
+                    message="1 orphan package found",
+                ),
+            ],
+        )
+
     def fake_upgrade(self, context, console):
         actions.append("upgrade")
         return 0
 
     def fake_apply(self, report, context):
         actions.append("fix")
-        return report
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.PASS,
+                    message="up to date",
+                ),
+                CheckResult(
+                    check_id="sys.orphans",
+                    severity=Severity.PASS,
+                    message="no orphans",
+                ),
+            ],
+        )
 
     monkeypatch.setattr(
         "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
         fake_run,
     )
+    monkeypatch.setattr("dotdoctor.application.system_update.SystemDryRunService.run", fake_rescan)
     monkeypatch.setattr(
         "dotdoctor.application.system_update.SystemUpgradeService.run", fake_upgrade
     )
@@ -324,7 +378,7 @@ def test_root_does_not_infer_reboot_from_legacy_critical_metadata(monkeypatch, a
     )
 
     result = runner.invoke(app, args, input="n\n")
-    assert result.exit_code == 0
+    assert result.exit_code == (0 if args else 1)
     assert "Critical updates" not in result.stdout
     assert "reboot will be recommended" not in result.stdout
     assert ("Update everything now?" in result.stdout) is (not args)
@@ -354,12 +408,12 @@ def test_root_verbose_shows_all_packages(monkeypatch) -> None:
 
     # Without verbose: truncated
     result_normal = runner.invoke(app, [], input="n\n")
-    assert result_normal.exit_code == 0
+    assert result_normal.exit_code == 1
     assert "• (2 more packages, use -v to show all)" in result_normal.stdout
 
     # With verbose (-v): shows all
     result_verbose = runner.invoke(app, ["-v"], input="n\n")
-    assert result_verbose.exit_code == 0
+    assert result_verbose.exit_code == 1
     assert "• pkg4 1.0 -> 1.1" in result_verbose.stdout
     assert "use -v to show all" not in result_verbose.stdout
 
@@ -571,7 +625,7 @@ def test_root_default_filters_out_passed_checks(monkeypatch) -> None:
     )
 
     result = runner.invoke(app, [], input="n\n")
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     assert "sys.packages" in result.stdout
     assert "sys.disk" not in result.stdout
     assert "1 passed · 1 outdated" in result.stdout
@@ -601,7 +655,7 @@ def test_root_all_flag_shows_passed_checks(monkeypatch) -> None:
     )
 
     result = runner.invoke(app, ["--all"], input="n\n")
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     assert "sys.packages" in result.stdout
     assert "sys.disk" in result.stdout
     assert "1 passed · 1 outdated" in result.stdout

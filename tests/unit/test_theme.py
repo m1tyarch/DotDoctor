@@ -82,9 +82,9 @@ def test_layout_hanging_indent_at_80_and_60_cols() -> None:
             for continuation in lines[1:]:
                 cont_plain = continuation.plain
                 assert cont_plain.startswith(" " * PREFIX_LEN)
-                assert (
-                    len(cont_plain) <= width
-                ), f"Continuation exceeded width {width}: '{cont_plain}'"
+                assert len(cont_plain) <= width, (
+                    f"Continuation exceeded width {width}: '{cont_plain}'"
+                )
 
 
 def test_status_fixed_width_and_left_aligned() -> None:

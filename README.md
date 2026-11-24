@@ -17,11 +17,11 @@ Get a clear view of what needs attention before making any changes.
 DotDoctor provides parallel diagnostic audits, guarded updates, and interactive hygiene for Arch Linux systems in a lightweight CLI.
 
 DotDoctor defines up to **26 modular system checks** across five categories (executed concurrently depending on installed tools):
-* **Updates:** Official packages (`pacman` / `checkupdates`), AUR (`paru` / `yay`), Flatpaks, firmware (`fwupd`), and Oh-My-Zsh.
-* **Integrity & Security:** Package database consistency (`pacman -Dk`), package signing keys (`archlinux-keyring`), modified package files, unread Arch news notices, known vulnerabilities (`arch-audit`), and foreign library ABI rebuilds (`rebuild-detector`).
+* **Updates:** Official packages (`pacman` / `checkupdates`), AUR (`paru` / `yay`), Flatpaks, firmware (`fwupd`), and Oh-My-Zsh (`~/.oh-my-zsh` or `$ZSH`).
+* **Integrity & Security:** Package database consistency (`pacman -Dk`), package signing keys (`archlinux-keyring`), missing installed package files (`pacman -Qk`), unread Arch news notices, known vulnerabilities (`arch-audit`), and foreign library ABI rebuilds (`rebuild-detector`).
 * **System Hygiene:** Orphan packages, package cache size (`paccache`), unused Flatpak runtimes, `.pacnew` files, and `systemd-journald` disk usage.
-* **Hardware & Storage:** Storage device health (S.M.A.R.T. via `smartctl`), SSD discard/TRIM timers, Btrfs filesystem errors and scrubs, and filesystem mount capacities.
-* **Services & Runtime State:** Failed systemd units, scheduled maintenance timers, pending reboot detection (kernel/driver mismatch), and backup freshness.
+* **Hardware & Storage:** Storage device health (S.M.A.R.T. via `smartctl`), SSD discard/TRIM timers, Btrfs filesystem errors and scrubs, root/boot disk space (`sys.disk`), and filesystem mount capacities (`sys.mounts`).
+* **Services & Runtime State:** Failed systemd units, scheduled maintenance timers, pending reboot detection (kernel/driver mismatch, critical packages, deleted libraries), network connectivity (`sys.network`), and backup freshness.
 
 https://github.com/user-attachments/assets/8a176002-5070-47a3-a2e8-a789da28a998
 
@@ -110,7 +110,7 @@ dotdoctor --json                     # Output structured JSON report directly to
 dotdoctor --json-output report.json  # Save structured JSON report to a file
 ```
 
-The output contains metadata (`dotdoctor_version`, `schema_version`), an execution `summary` (`total`, `passed`, `warnings`, `failures`, `outdated`, `skipped`), the overall `exit_code`, and an array of individual `results`.
+The JSON document contains top-level fields `schema_version` (`"1.0"`), `dotdoctor_version`, `profile` (`"system"`), `exit_code`, an execution `summary` (`{"PASS": ..., "OUTD": ..., "WARN": ..., "FAIL": ..., "SKIP": ...}`), and an array of individual `results` (`check_id`, `severity`, `message`, `remediation`, `details`).
 
 ### Exit Codes
 

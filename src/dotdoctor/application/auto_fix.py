@@ -1,6 +1,8 @@
 import os
+import re
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -37,6 +39,9 @@ class RemovalPackage:
 class OrphanRemovalPlan:
     targets: tuple[str, ...]
     packages: tuple[RemovalPackage, ...]
+
+
+_UNIT_NAME_RE = re.compile(r"^[a-zA-Z0-9_\.\@\-\:\\]+$")
 
 
 class InteractiveAutoFixer:
@@ -78,20 +83,12 @@ class InteractiveAutoFixer:
                 self._console.print(f"        {target}", markup=False)
 
             prompt = self._build_prompt_message(result)
-            default_choice = result.check_id not in {
-                "sys.reboot",
-                "sys.trim",
-                "sys.btrfs",
-                "sys.timers",
-                "sys.integrity",
-                "sys.backup",
-            }
 
             try:
                 # Orphans require a fresh pacman transaction preview before
                 # their own confirmation, which the handler presents.
                 should_fix = result.check_id == "sys.orphans" or typer.confirm(
-                    prompt, default=default_choice
+                    prompt, default=False
                 )
             except (typer.Abort, Exception):
                 self._console.print("[dim]Skipped by user.[/dim]")
@@ -158,8 +155,9 @@ class InteractiveAutoFixer:
                     details={**verified.details, "auto_fixed": True},
                 )
             else:
+                note_str = escape(outcome.note)
                 self._console.print(
-                    f"[yellow]No changes applied[/yellow] for {result.check_id}: {outcome.note}"
+                    f"[yellow]No changes applied[/yellow] for {result.check_id}: {note_str}"
                 )
 
         if not had_issues:
@@ -209,6 +207,7 @@ class InteractiveAutoFixer:
             "sys.pacnew": self._fix_sys_pacnew,
             "sys.journal": self._fix_sys_journal,
             "sys.reboot": self._fix_sys_reboot,
+            "sys.services": self._fix_sys_services,
             "sys.disk": self._fix_sys_disk,
             "sys.trim": self._fix_maintenance,
             "sys.btrfs": self._fix_maintenance,
@@ -331,6 +330,8 @@ class InteractiveAutoFixer:
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=False,
                 timeout=15,
                 env={**os.environ, "LC_ALL": "C"},
@@ -404,8 +405,11 @@ class InteractiveAutoFixer:
                 changed=False,
                 note="pacdiff is not installed (install pacman-contrib).",
             )
+        if not sys.stdin.isatty():
+            return FixOutcome(False, "Interactive TTY is required to run pacdiff.")
 
-        res = subprocess.run(["sudo", "pacdiff"], check=False)
+        cmd = ["pacdiff"] if os.geteuid() == 0 else ["sudo", "pacdiff"]
+        res = subprocess.run(cmd, check=False)
         if res.returncode == 0:
             return FixOutcome(changed=True, note="Reviewed .pacnew files with pacdiff.")
         return FixOutcome(changed=False, note=f"pacdiff exited with code {res.returncode}.")
@@ -458,10 +462,44 @@ class InteractiveAutoFixer:
         if shutil.which("systemctl") is None:
             return FixOutcome(changed=False, note="systemctl is not installed.")
 
-        return FixOutcome(
-            changed=False,
-            note="Inspect failed service logs and resolve the cause before restarting.",
-        )
+        raw_units = result.details.get("failed_units", [])
+        system_units: list[str] = []
+        user_units: list[str] = []
+        for raw in raw_units:
+            if not isinstance(raw, str):
+                continue
+            if raw.endswith(" (user)"):
+                unit = raw[:-7].strip()
+                if _UNIT_NAME_RE.fullmatch(unit):
+                    user_units.append(unit)
+            else:
+                unit = raw.strip()
+                if _UNIT_NAME_RE.fullmatch(unit):
+                    system_units.append(unit)
+
+        if not system_units and not user_units:
+            return FixOutcome(changed=False, note="No valid failed units found to reset.")
+
+        commands: list[tuple[list[str], str]] = []
+        if system_units:
+            commands.append(
+                (
+                    ["sudo", "systemctl", "reset-failed", *system_units],
+                    f"Resetting failed system units ({', '.join(system_units[:2])})",
+                )
+            )
+        if user_units:
+            commands.append(
+                (
+                    ["systemctl", "--user", "reset-failed", *user_units],
+                    f"Resetting failed user units ({', '.join(user_units[:2])})",
+                )
+            )
+
+        outcome = self._run_maintenance_commands(commands)
+        if outcome.changed:
+            return FixOutcome(changed=True, note="Reset failed systemd units.")
+        return outcome
 
     def _has_maintenance_action(self, result: CheckResult) -> bool:
         keys = {
@@ -487,6 +525,8 @@ class InteractiveAutoFixer:
             "sys.backup",
         }:
             return self._has_maintenance_action(result)
+        if result.check_id == "sys.services":
+            return bool(result.details.get("failed_units"))
         return True
 
     @staticmethod
@@ -497,8 +537,10 @@ class InteractiveAutoFixer:
             return list(result.details.get("scrub_targets", []))
         if result.check_id == "sys.timers":
             return [
-                f'{timer["unit"]} ({timer["scope"]})' for timer in result.details.get("timers", [])
+                f"{timer['unit']} ({timer['scope']})" for timer in result.details.get("timers", [])
             ]
+        if result.check_id == "sys.services":
+            return list(result.details.get("failed_units", []))
         return []
 
     def _fix_maintenance(self, context: ScanContext, result: CheckResult) -> FixOutcome:
@@ -547,17 +589,20 @@ class InteractiveAutoFixer:
                 return FixOutcome(
                     True, "Selected packages reinstalled during a full system upgrade."
                 )
+        timeout = None if result.check_id in {"sys.btrfs", "sys.backup"} else 300.0
         return self._run_maintenance_commands(
             [
                 (command, self._maintenance_command_label(command, result.check_id))
                 for command in commands
-            ]
+            ],
+            timeout=timeout,
         )
 
     def _run_maintenance_commands(
         self,
         commands: list[tuple[list[str], str]],
         preflight: Callable[[], FixOutcome | None] | None = None,
+        timeout: float | None = 300.0,
     ) -> FixOutcome:
         """Authenticate with the terminal idle, then run captured, noninteractive steps."""
         if not commands:
@@ -569,6 +614,8 @@ class InteractiveAutoFixer:
                     check=False,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=15,
                 )
                 if cached.returncode:
@@ -600,10 +647,13 @@ class InteractiveAutoFixer:
                         stdin=subprocess.DEVNULL,
                         capture_output=True,
                         text=True,
-                        timeout=300,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=timeout,
                     )
                 except subprocess.TimeoutExpired:
-                    return FixOutcome(False, f"{label} timed out after 300 seconds.")
+                    timeout_str = f" after {timeout} seconds" if timeout is not None else ""
+                    return FixOutcome(False, f"{label} timed out{timeout_str}.")
             if completed.returncode:
                 error = getattr(completed, "stderr", "") or getattr(completed, "stdout", "") or ""
                 for message in error.strip().splitlines()[-3:]:
@@ -651,24 +701,23 @@ class InteractiveAutoFixer:
             yield
 
     def _fix_sys_disk(self, context: ScanContext, result: CheckResult) -> FixOutcome:
-        notes: list[str] = []
+        commands: list[tuple[list[str], str]] = []
+        actions: list[str] = []
         if shutil.which("paccache") is not None:
-            outcome = self._run_maintenance_commands(
-                [(["sudo", "paccache", "-rk2"], "Cleaning pacman package cache")]
-            )
-            if outcome.changed:
-                notes.append("cleaned pacman cache")
+            commands.append((["sudo", "paccache", "-rk2"], "Cleaning pacman package cache"))
+            actions.append("cleaned pacman cache")
         if shutil.which("journalctl") is not None:
-            outcome = self._run_maintenance_commands(
-                [
-                    (
-                        ["sudo", "journalctl", "--vacuum-size=1G"],
-                        "Vacuuming systemd journal logs to 1G",
-                    )
-                ]
+            commands.append(
+                (
+                    ["sudo", "journalctl", "--vacuum-size=1G"],
+                    "Vacuuming systemd journal logs to 1G",
+                )
             )
-            if outcome.changed:
-                notes.append("vacuumed journal logs")
-        if notes:
-            return FixOutcome(changed=True, note=" and ".join(notes) + ".")
-        return FixOutcome(changed=False, note="No disk cleanup actions available.")
+            actions.append("vacuumed journal logs")
+        if not commands:
+            return FixOutcome(changed=False, note="No disk cleanup actions available.")
+
+        outcome = self._run_maintenance_commands(commands)
+        if outcome.changed:
+            return FixOutcome(changed=True, note=" and ".join(actions) + ".")
+        return outcome

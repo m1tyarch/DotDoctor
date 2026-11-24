@@ -10,6 +10,12 @@ def _handle_sigterm(signum: int, frame: Any) -> None:
 
 
 def run() -> None:
+    if len(sys.argv) == 2 and sys.argv[1] in ("-V", "--version", "version"):
+        from dotdoctor import __version__
+
+        sys.stdout.write(f"dotdoctor {__version__}\n")
+        sys.exit(0)
+
     signal.signal(signal.SIGTERM, _handle_sigterm)
     try:
         from dotdoctor.cli.app import app

@@ -1,17 +1,35 @@
+from __future__ import annotations
+
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import yaml
-from pydantic import ValidationError
-
-from dotdoctor.domain.config import DotDoctorConfig, default_config
+if TYPE_CHECKING:
+    from dotdoctor.domain.config import DotDoctorConfig
 
 
 class ConfigError(Exception):
     pass
 
 
+def _resolve_user_home() -> Path:
+    sudo_user = os.environ.get("SUDO_USER")
+    if os.geteuid() == 0 and sudo_user and sudo_user != "root":
+        try:
+            import pwd
+
+            return Path(pwd.getpwnam(sudo_user).pw_dir)
+        except (KeyError, OSError):
+            pass
+    return Path.home()
+
+
 def load_config(config_path: Path | None = None) -> DotDoctorConfig:
+    import yaml
+    from pydantic import ValidationError
+
+    from dotdoctor.domain.config import DotDoctorConfig, default_config
+
     explicit = True
     if config_path is None:
         env_path = os.environ.get("DOTDOCTOR_CONFIG")
@@ -19,8 +37,16 @@ def load_config(config_path: Path | None = None) -> DotDoctorConfig:
             config_path = Path(env_path)
         else:
             explicit = False
+            user_home = _resolve_user_home()
             xdg_config = os.environ.get("XDG_CONFIG_HOME")
-            base_dir = Path(xdg_config) if xdg_config else Path.home() / ".config"
+            if (
+                os.geteuid() == 0
+                and os.environ.get("SUDO_USER") not in (None, "", "root")
+                and xdg_config
+                and xdg_config.startswith("/root")
+            ):
+                xdg_config = None
+            base_dir = Path(xdg_config) if xdg_config else user_home / ".config"
             candidates = [
                 base_dir / "dotdoctor" / "config.yml",
                 base_dir / "dotdoctor" / "config.yaml",
@@ -44,7 +70,7 @@ def load_config(config_path: Path | None = None) -> DotDoctorConfig:
             if raw is None:
                 raw = {}
             config = DotDoctorConfig.model_validate(raw)
-        except (yaml.YAMLError, ValidationError, OSError) as exc:
+        except (yaml.YAMLError, ValidationError, OSError, UnicodeDecodeError) as exc:
             raise ConfigError(f"Invalid config at {config_path}: {exc}") from exc
 
     return apply_env_overrides(config)

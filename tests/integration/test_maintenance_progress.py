@@ -83,6 +83,8 @@ def test_trim_animates_silent_wait_and_verification_without_hiding_auth(
             "stdin": subprocess.DEVNULL,
             "capture_output": True,
             "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
             "timeout": 300,
         }
         if command[-1] == "fstrim.service":
@@ -312,6 +314,8 @@ def test_orphan_removal_keeps_authentication_visible_and_captures_pacman_output(
             "stdin": subprocess.DEVNULL,
             "capture_output": True,
             "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
             "timeout": 300,
         }
         spinner = env.state.grids[-1].columns[1]._cells[0]

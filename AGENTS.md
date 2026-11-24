@@ -130,7 +130,7 @@ Every task is considered complete **only** when all of the following pass withou
 .venv/bin/ruff check .
 
 # 3. Check code formatting
-.venv/bin/black --check .
+.venv/bin/ruff format --check .
 
 # 4. Static type checking
 .venv/bin/mypy src

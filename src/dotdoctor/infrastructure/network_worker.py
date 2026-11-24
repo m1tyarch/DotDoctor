@@ -17,14 +17,18 @@ HTTPS_TARGETS = (
 
 
 def _reachable(url: str, timeout: float) -> bool:
+    if not (url.startswith("https://") or url.startswith("http://")):
+        return False
     try:
         request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "DotDoctor"})
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.geturl().startswith("https://")
+        with urllib.request.urlopen(  # nosec: B310
+            request, timeout=timeout
+        ) as response:
+            return bool(response.geturl().startswith("https://"))
     except urllib.error.HTTPError as exc:
         # A verified HTTPS response proves reachability, even if this service
         # rejects HEAD or currently returns an application/server error.
-        reachable = exc.geturl().startswith("https://")
+        reachable = bool(exc.geturl().startswith("https://"))
         exc.close()
         return reachable
     except (OSError, ValueError, http.client.HTTPException):

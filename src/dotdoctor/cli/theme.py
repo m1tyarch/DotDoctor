@@ -7,7 +7,7 @@ import textwrap
 from rich.text import Text
 
 # Status Labels (4 uppercase letters)
-STATUS_PASS = "PASS"
+STATUS_PASS = "PASS"  # nosec: B105
 STATUS_WARN = "WARN"
 STATUS_FAIL = "FAIL"
 STATUS_OLD = "OLD"
@@ -21,7 +21,7 @@ STATUS_SKIP = "SKIP"
 # - OLD: cyan
 # - SKIP, explanations in parens, auxiliary: dim
 # - regular text: default
-STYLE_PASS = "dim green"
+STYLE_PASS = "dim green"  # nosec: B105
 STYLE_DONE = "dim green"
 STYLE_WARN = "yellow"
 STYLE_FAIL = "bold red"

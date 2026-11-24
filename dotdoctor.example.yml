@@ -7,6 +7,8 @@
 #   sys.flatpak         - Flatpak packages
 #   sys.flatpak-unused  - Unused Flatpak runtimes
 #   sys.firmware        - Firmware updates (fwupd)
+#   sys.shell-omz       - Oh-My-Zsh updates
+#   sys.network         - Network connection and HTTPS reachability
 #   sys.reboot          - Reboot required check
 #   sys.disk            - Disk space check
 #   sys.orphans         - Orphan packages

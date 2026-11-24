@@ -51,8 +51,10 @@ JSON export is implemented for the default command and `--fix`, and contains the
 latest scan/fix report. Successful accepted updates are followed by a new scan;
 if an accepted update fails, the default command exports its pre-update report
 and returns the update failure code. `--sysup` does not export a JSON report.
-JSON uses `profile: system` and `results` with `check_id`, `severity`, `message`,
-`remediation`, and `details`; the terminal token `OLD` is serialized as `OUTD`.
+The top-level report includes `schema_version` (`"1.0"`), `dotdoctor_version`,
+`profile` (`"system"`), `exit_code`, an execution `summary` (`{"PASS": ..., "OUTD": ..., "WARN": ..., "FAIL": ..., "SKIP": ...}`),
+and an array of `results` with `check_id`, `severity`, `message`, `remediation`,
+and `details`; the terminal token `OLD` is serialized as `OUTD`.
 See the illustrative [example report](../artifacts/example-report.json).
 
 Disable specific checks:
@@ -76,6 +78,11 @@ Interactively resolve detected system hygiene issues:
 ```bash
 dotdoctor --fix
 ```
+
+Automated fixes include cleaning pacman package cache (`paccache`), removing unused
+Flatpak runtimes, safely vacuuming journal logs, reviewing `.pacnew` files (`pacdiff`),
+removing orphan packages, enabling maintenance timers, resetting failed systemd units (`reset-failed`),
+initiating overdue Btrfs scrubs, and requesting system reboot when required.
 
 ## Configuration
 
@@ -177,11 +184,11 @@ The preview omits `--nosave`, which pacman does not allow with `--print-format`;
 this flag affects configuration-file handling during deletion, not the package set.
 
 Reboot detection (`sys.reboot`) compares the running kernel version with installed
-module directories and checks explicit reboot markers. Pending official/AUR
-updates are reported as OLD without classifying package names as critical or
-claiming that a reboot is already required. After an update, confirmed reboot
-findings remain visible and the default flow can offer a reboot after other fixes.
-This check does not track every running application or its loaded libraries.
+module directories, inspects `pacman.log` since boot for critical system package upgrades
+(e.g., mesa, vulkan, nvidia, glibc, systemd), checks running processes for unlinked/deleted
+critical shared libraries, and checks explicit reboot markers. Pending official/AUR
+updates are reported as OLD without claiming that a reboot is already required. After an update,
+confirmed reboot findings remain visible and the default/sysup flow offers a reboot prompt.
 
 The kernel comparison reads module directories without sudo. Kernel journal
 scanning has been removed from audits and upgrade preflight checks.
@@ -291,12 +298,12 @@ rejected; inspect `systemctl list-jobs` before retrying. DotDoctor never forces 
 
 ### Exit codes
 
-| Code | Current meaning |
+| Code | Meaning |
 | --- | --- |
-| `0` | Scan/fix has no FAIL; WARN, OUTD and neutral SKIP also return zero. Upgrade completed, or its initial audit reported no updates and no FAIL. |
-| `1` | Upgrade connectivity failure or unrecovered mirror/network failure. |
-| `2` | Scan/fix contains FAIL, an upgrade is blocked or fails, or CLI arguments are invalid. |
-| `3` | YAML parsing/schema error, or caching sudo credentials for an upgrade failed. |
+| `0` | All checks clean (`PASS` / `SKIP`); or update completed with zero errors. |
+| `1` | One or more checks returned `WARN` or `OUTD`; or pre-flight network/disk check failed. |
+| `2` | One or more checks returned `FAIL`; or pre-update snapshot or package transaction failed; or CLI arguments invalid. |
+| `3` | Configuration file not found, YAML parsing/validation error, or `sudo` authentication timed out / failed. |
 | `130` | Interrupted with Ctrl+C. |
 
 An update accepted from the default command preserves its failure code. Use JSON

@@ -41,7 +41,6 @@ Issues = "https://github.com/m1tyarch/DotDoctor/issues"
 dev = [
   "pytest>=8.0.0,<9.0.0",
   "pytest-cov>=5.0.0,<6.0.0",
-  "black>=24.0.0,<25.0.0",
   "ruff>=0.6.0,<1.0.0",
   "mypy>=1.10.0,<2.0.0",
   "types-PyYAML>=6.0.12",
@@ -51,28 +50,21 @@ dev = [
 [project.scripts]
 dotdoctor = "dotdoctor.main:run"
 
-[tool.black]
-line-length = 100
-target-version = ["py311"]
-
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
+select = ["E", "F", "I", "B", "UP", "SIM", "PERF", "RUF"]
 
 [tool.mypy]
 files = ["src"]
 python_version = "3.11"
-warn_unused_configs = true
-disallow_untyped_defs = true
-check_untyped_defs = true
-strict_optional = true
+strict = true
 
 [tool.bandit]
 targets = ["src"]
-skips = ["B101", "B105", "B110", "B310", "B314", "B404", "B405", "B603", "B604", "B607"]
+skips = ["B101", "B404", "B603", "B607"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

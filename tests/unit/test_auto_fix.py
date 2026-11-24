@@ -173,6 +173,7 @@ def test_fix_sys_pacnew(monkeypatch, tmp_path: Path) -> None:
         "dotdoctor.application.auto_fix.shutil.which", lambda name: f"/usr/bin/{name}"
     )
     monkeypatch.setattr("dotdoctor.application.auto_fix.subprocess.run", fake_run)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
 
     result = CheckResult(
         check_id="sys.pacnew",
@@ -184,6 +185,46 @@ def test_fix_sys_pacnew(monkeypatch, tmp_path: Path) -> None:
     assert outcome.changed is True
     assert outcome.note == "Reviewed .pacnew files with pacdiff."
     assert commands == [["sudo", "pacdiff"]]
+
+
+def test_fix_sys_pacnew_requires_tty(monkeypatch, tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    fixer = InteractiveAutoFixer(Console())
+    monkeypatch.setattr(
+        "dotdoctor.application.auto_fix.shutil.which", lambda name: f"/usr/bin/{name}"
+    )
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    result = CheckResult(
+        check_id="sys.pacnew",
+        severity=Severity.WARN,
+        message="1 .pacnew file found",
+    )
+    outcome = fixer._fix_sys_pacnew(context, result)
+    assert outcome.changed is False
+    assert "Interactive TTY is required" in outcome.note
+
+
+def test_fix_sys_pacnew_root_runs_without_sudo(monkeypatch, tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    fixer = InteractiveAutoFixer(Console())
+    commands = []
+    monkeypatch.setattr(
+        "dotdoctor.application.auto_fix.shutil.which", lambda name: f"/usr/bin/{name}"
+    )
+    monkeypatch.setattr(
+        "dotdoctor.application.auto_fix.subprocess.run",
+        lambda cmd, **kw: commands.append(cmd) or SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("dotdoctor.application.auto_fix.os.geteuid", lambda: 0)
+    result = CheckResult(
+        check_id="sys.pacnew",
+        severity=Severity.WARN,
+        message="1 .pacnew file found",
+    )
+    outcome = fixer._fix_sys_pacnew(context, result)
+    assert outcome.changed is True
+    assert commands == [["pacdiff"]]
 
 
 def test_fix_sys_journal(monkeypatch, tmp_path: Path) -> None:
@@ -427,13 +468,85 @@ def test_fix_sys_services(monkeypatch, tmp_path: Path) -> None:
     result = CheckResult(
         check_id="sys.services",
         severity=Severity.FAIL,
-        message="1 failed unit",
+        message="2 failed units",
+        details={"failed_units": ["httpd.service", "backup.timer (user)"]},
     )
     outcome = fixer._fix_sys_services(context, result)
 
+    assert outcome.changed is True
+    assert "Reset failed systemd units." in outcome.note
+    assert commands == [
+        ["sudo", "-n", "-v"],
+        ["sudo", "-n", "systemctl", "--no-ask-password", "reset-failed", "httpd.service"],
+        ["systemctl", "--no-ask-password", "--user", "reset-failed", "backup.timer"],
+    ]
+
+
+def test_fix_sys_services_empty_or_invalid(monkeypatch, tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    fixer = InteractiveAutoFixer(Console())
+
+    commands = []
+
+    def fake_run(cmd, *args, **kwargs):
+        commands.append(cmd)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(
+        "dotdoctor.application.auto_fix.shutil.which", lambda name: f"/usr/bin/{name}"
+    )
+    monkeypatch.setattr("dotdoctor.application.auto_fix.subprocess.run", fake_run)
+
+    # Empty details
+    result = CheckResult(
+        check_id="sys.services",
+        severity=Severity.FAIL,
+        message="failed units",
+        details={},
+    )
+    outcome = fixer._fix_sys_services(context, result)
     assert outcome.changed is False
-    assert "resolve the cause" in outcome.note
+    assert "No valid failed units" in outcome.note
     assert commands == []
+
+    # Invalid unit names (command injection prevention)
+    result_invalid = CheckResult(
+        check_id="sys.services",
+        severity=Severity.FAIL,
+        message="failed units",
+        details={"failed_units": ["bad;rm -rf /", "invalid unit name"]},
+    )
+    outcome_invalid = fixer._fix_sys_services(context, result_invalid)
+    assert outcome_invalid.changed is False
+    assert "No valid failed units" in outcome_invalid.note
+    assert commands == []
+
+
+def test_can_fix_and_action_targets_sys_services() -> None:
+    fixer = InteractiveAutoFixer(Console())
+    with_units = CheckResult(
+        check_id="sys.services",
+        severity=Severity.FAIL,
+        message="failed units",
+        details={"failed_units": ["service1.service", "service2.timer (user)"]},
+    )
+    without_units = CheckResult(
+        check_id="sys.services",
+        severity=Severity.FAIL,
+        message="failed units",
+        details={"failed_units": []},
+    )
+    no_details = CheckResult(
+        check_id="sys.services",
+        severity=Severity.FAIL,
+        message="failed units",
+    )
+
+    assert fixer.can_fix(with_units) is True
+    assert fixer.can_fix(without_units) is False
+    assert fixer.can_fix(no_details) is False
+    assert fixer._action_targets(with_units) == ["service1.service", "service2.timer (user)"]
+    assert fixer._action_targets(no_details) == []
 
 
 def test_fix_sys_disk(monkeypatch, tmp_path: Path) -> None:
@@ -516,9 +629,7 @@ def test_interactive_auto_fixer_apply_skips_outd_and_prompts_warn(
     # Let sys.reboot confirm be False
     def fake_confirm_conditional(prompt, default=True):
         prompts.append((prompt, default))
-        if "reboot" in prompt.lower():
-            return False
-        return True
+        return "reboot" not in prompt.lower()
 
     monkeypatch.setattr("dotdoctor.application.auto_fix.typer.confirm", fake_confirm_conditional)
 

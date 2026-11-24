@@ -6,7 +6,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 
 
@@ -44,10 +44,8 @@ class AuditSession:
 
     @staticmethod
     def _signal(process: subprocess.Popen[str], sig: signal.Signals) -> None:
-        try:
+        with suppress(ProcessLookupError, PermissionError):
             os.killpg(process.pid, sig)
-        except ProcessLookupError:
-            pass
 
     def cancel(self) -> None:
         self.cancelled.set()
@@ -92,6 +90,8 @@ class AuditSession:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 env=env,
                 start_new_session=True,
             )
@@ -118,13 +118,21 @@ class AuditSession:
             try:
                 if process.poll() is None:
                     self._signal(process, signal.SIGTERM)
-                    try:
+                    with suppress(subprocess.TimeoutExpired):
                         process.wait(timeout=0.15)
-                    except subprocess.TimeoutExpired:
-                        pass
-                # Also clean up descendants when the leader has already exited.
-                self._signal(process, signal.SIGKILL)
-                process.communicate()
+                if process.poll() is None:
+                    self._signal(process, signal.SIGKILL)
+                if process.stdout:
+                    with suppress(Exception):
+                        process.stdout.close()
+                if process.stderr:
+                    with suppress(Exception):
+                        process.stderr.close()
+                if process.stdin:
+                    with suppress(Exception):
+                        process.stdin.close()
+                with suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=0.2)
             finally:
                 with self._lock:
                     self._processes.discard(process)
@@ -143,6 +151,8 @@ def capture(
         command,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
         timeout=timeout,
         input=input_str,

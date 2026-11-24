@@ -163,11 +163,7 @@ def render_terminal_report(
             and isinstance(packages, list)
             and (result.severity not in {Severity.PASS, Severity.SKIP} or verbose)
         ):
-            to_show: list[str] = []
-            if verbose:
-                to_show = packages
-            else:
-                to_show = packages[:3]
+            to_show = packages if verbose else packages[:3]
 
             for pkg in to_show:
                 pkg_text = f"• {pkg}"

@@ -73,7 +73,7 @@ for shell, path in [
     ("fish", "'"$pkgdir"'/usr/share/fish/vendor_completions.d/dotdoctor.fish"),
 ]:
     pathlib.Path(path).write_text(typer.completion.get_completion_script(prog_name="dotdoctor", complete_var="_DOTDOCTOR_COMPLETE", shell=shell))
-' 2>/dev/null || true
+'
 
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
