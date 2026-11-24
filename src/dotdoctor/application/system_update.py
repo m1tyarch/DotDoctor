@@ -9,10 +9,11 @@ import sys
 import textwrap
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -97,12 +98,235 @@ class RebootStatus:
     reason: str | None
     running_kernel: str
     installed_kernels: list[str]
+    packages: list[str] = field(default_factory=list)
+
+
+CRITICAL_REBOOT_PACKAGES: frozenset[str] = frozenset(
+    {
+        # Kernels and firmware
+        "linux",
+        "linux-lts",
+        "linux-zen",
+        "linux-hardened",
+        "linux-firmware",
+        "intel-ucode",
+        "amd-ucode",
+        # Core system & C library
+        "glibc",
+        "musl",
+        "systemd",
+        "systemd-libs",
+        "dbus",
+        "dbus-broker",
+        # Graphics drivers & display stack
+        "mesa",
+        "mesa-amber",
+        "vulkan-intel",
+        "vulkan-radeon",
+        "vulkan-mesa-layers",
+        "vulkan-mesa-implicit-layers",
+        "vulkan-nouveau",
+        "nvidia",
+        "nvidia-utils",
+        "nvidia-lts",
+        "nvidia-open",
+        "nvidia-open-dkms",
+        "nvidia-dkms",
+        # Display servers & compositors
+        "wayland",
+        "hyprland",
+        "sway",
+        "mutter",
+        "kwin",
+        "xorg-server",
+        "xorg-xwayland",
+        # Core audio/multimedia
+        "pipewire",
+        "wireplumber",
+    }
+)
+
+CRITICAL_PACKAGE_PREFIXES: tuple[str, ...] = (
+    "vulkan-",
+    "nvidia-",
+    "mesa-",
+    "xf86-video-",
+)
+
+_CRITICAL_LIBRARY_SUBSTRINGS: tuple[str, ...] = (
+    "libc.so",
+    "libm.so",
+    "libsystemd.so",
+    "libdbus-",
+    "libGLX_mesa.so",
+    "libEGL_mesa.so",
+    "iris_dri.so",
+    "radeonsi_dri.so",
+    "nouveau_dri.so",
+    "nvidia",
+    "libdrm.so",
+    "libwayland-client.so",
+    "libwayland-server.so",
+    "libpipewire-",
+)
+
+_EXCLUDED_MAPPED_PREFIXES: tuple[str, ...] = (
+    "/dev/",
+    "/memfd:",
+    "/run/",
+    "/tmp/",
+    "/SYSV",
+    "/etc/ld.so",
+    "/home/",
+    "/root/",
+)
+
+_LIBRARY_DIR_PREFIXES: tuple[str, ...] = (
+    "/usr/lib",
+    "/usr/lib64",
+    "/lib",
+    "/lib64",
+    "/opt/",
+)
+
+_PACMAN_ALPM_PATTERN = re.compile(
+    r"^\[([^\]]+)\]\s+\[ALPM\]\s+(upgraded|installed|reinstalled)\s+([a-zA-Z0-9@_+\.\-]+)\s+\("
+)
+
+
+def is_critical_reboot_package(name: str, extra_packages: Collection[str] = ()) -> bool:
+    normalized = name.strip().lower()
+    if normalized in extra_packages:
+        return True
+    if normalized in CRITICAL_REBOOT_PACKAGES:
+        return True
+    if normalized.endswith("-dkms"):
+        return True
+    if normalized.startswith("linux-") and normalized.endswith("-headers"):
+        return False
+    if normalized.startswith(("linux-", "nvidia-")):
+        return True
+    return normalized.startswith(CRITICAL_PACKAGE_PREFIXES)
+
+
+def get_system_boot_time() -> float | None:
+    try:
+        proc_stat = Path("/proc/stat")
+        if proc_stat.exists():
+            for line in proc_stat.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.startswith("btime "):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return float(parts[1])
+    except (OSError, ValueError, IndexError):
+        pass
+
+    try:
+        proc_uptime = Path("/proc/uptime")
+        if proc_uptime.exists():
+            uptime_sec = float(proc_uptime.read_text(encoding="utf-8", errors="ignore").split()[0])
+            return time.time() - uptime_sec
+    except (OSError, ValueError, IndexError):
+        pass
+
+    return None
+
+
+def find_pacman_critical_upgrades(
+    pacman_log: Path,
+    since_timestamp: float,
+    extra_packages: Collection[str] = (),
+) -> list[str]:
+    if not pacman_log.exists() or not pacman_log.is_file():
+        return []
+
+    try:
+        size = pacman_log.stat().st_size
+        max_read = 2 * 1024 * 1024
+        if size > max_read:
+            with pacman_log.open("rb") as f:
+                f.seek(size - max_read)
+                f.readline()
+                content = f.read().decode("utf-8", errors="replace")
+        else:
+            content = pacman_log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    found_packages: set[str] = set()
+    for line in reversed(content.splitlines()):
+        match = _PACMAN_ALPM_PATTERN.match(line)
+        if not match:
+            continue
+        ts_str, _, pkg_name = match.groups()
+        try:
+            ts = datetime.fromisoformat(ts_str).timestamp()
+        except (ValueError, TypeError):
+            continue
+
+        if ts < since_timestamp:
+            break
+
+        if is_critical_reboot_package(pkg_name, extra_packages=extra_packages):
+            found_packages.add(pkg_name)
+
+    return sorted(found_packages)
+
+
+def find_processes_with_deleted_libraries(
+    proc_dir: Path = Path("/proc"),
+) -> list[str]:
+    if not proc_dir.exists() or not proc_dir.is_dir():
+        return []
+
+    processes: set[str] = set()
+    try:
+        entries = list(proc_dir.iterdir())
+    except OSError:
+        return []
+
+    for pid_dir in entries:
+        if not pid_dir.is_dir() or not pid_dir.name.isdigit():
+            continue
+
+        maps_file = pid_dir / "maps"
+        try:
+            with maps_file.open("r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if "(deleted)" not in line:
+                        continue
+                    parts = line.split()
+                    if len(parts) < 6:
+                        continue
+                    mapped_path = parts[-2]
+                    if mapped_path.startswith(_EXCLUDED_MAPPED_PREFIXES):
+                        continue
+                    if mapped_path.startswith(_LIBRARY_DIR_PREFIXES) and any(
+                        sub in mapped_path for sub in _CRITICAL_LIBRARY_SUBSTRINGS
+                    ):
+                        comm_file = pid_dir / "comm"
+                        comm = (
+                            comm_file.read_text(encoding="utf-8", errors="ignore").strip()
+                            if comm_file.exists()
+                            else pid_dir.name
+                        )
+                        if comm:
+                            processes.add(comm)
+                        break
+        except (OSError, PermissionError):
+            continue
+
+    return sorted(processes)
 
 
 def detect_reboot_status(
     modules_dir: Path = Path("/usr/lib/modules"),
     running_kernel: str | None = None,
     marker_paths: tuple[str, ...] = ("/run/reboot-required", "/var/run/reboot-required"),
+    pacman_log: Path | None = Path("/var/log/pacman.log"),
+    boot_time: float | None = None,
+    proc_dir: Path | None = Path("/proc"),
+    extra_critical_packages: Sequence[str] = (),
 ) -> RebootStatus:
     current_kernel = running_kernel or platform.release()
     installed: list[str] = []
@@ -114,6 +338,9 @@ def detect_reboot_status(
             )
         except OSError:
             installed = []
+
+    reasons: list[str] = []
+    affected_packages: set[str] = set()
 
     for marker in marker_paths:
         marker_path = Path(marker)
@@ -127,38 +354,58 @@ def detect_reboot_status(
                         if p.strip()
                     ]
                     if pkgs:
-                        return RebootStatus(
-                            required=True,
-                            reason=f"Reboot required by system packages ({', '.join(pkgs)}).",
-                            running_kernel=current_kernel,
-                            installed_kernels=installed,
+                        affected_packages.update(pkgs)
+                        reasons.append(
+                            f"Reboot required by system packages ({', '.join(sorted(pkgs))})."
                         )
+                        break
                 except OSError:
                     pass
-            return RebootStatus(
-                required=True,
-                reason=f"Reboot marker file '{marker}' detected.",
-                running_kernel=current_kernel,
-                installed_kernels=installed,
+            reasons.append(f"Reboot marker file '{marker}' detected.")
+            break
+
+    if installed and current_kernel not in installed:
+        reasons.append(
+            f"Running kernel ({current_kernel}) differs from "
+            f"installed kernel ({', '.join(installed)})."
+        )
+
+    if pacman_log is not None:
+        effective_boot_time = boot_time if boot_time is not None else get_system_boot_time()
+        if effective_boot_time is not None:
+            critical_upgrades = find_pacman_critical_upgrades(
+                pacman_log,
+                effective_boot_time,
+                extra_packages=extra_critical_packages,
+            )
+            if critical_upgrades:
+                affected_packages.update(critical_upgrades)
+                reasons.append(
+                    f"Critical system packages updated since boot ({', '.join(critical_upgrades)})."
+                )
+
+    if proc_dir is not None:
+        procs_with_deleted = find_processes_with_deleted_libraries(proc_dir)
+        if procs_with_deleted:
+            reasons.append(
+                f"Processes holding deleted shared libraries ({', '.join(procs_with_deleted)})."
             )
 
-    if installed:
-        if current_kernel not in installed:
-            return RebootStatus(
-                required=True,
-                reason=(
-                    f"Running kernel ({current_kernel}) differs from "
-                    f"installed kernel ({', '.join(installed)})."
-                ),
-                running_kernel=current_kernel,
-                installed_kernels=installed,
-            )
+    if reasons:
+        return RebootStatus(
+            required=True,
+            reason=" ".join(reasons),
+            running_kernel=current_kernel,
+            installed_kernels=installed,
+            packages=sorted(affected_packages),
+        )
 
     return RebootStatus(
         required=False,
         reason=None,
         running_kernel=current_kernel,
         installed_kernels=installed,
+        packages=[],
     )
 
 
@@ -856,7 +1103,15 @@ class SystemDryRunService:
         )
 
     def _check_reboot(self, context: ScanContext) -> CheckResult:
-        status = detect_reboot_status()
+        extra_pkgs = getattr(self.config.maintenance, "extra_reboot_packages", [])
+        try:
+            status = (
+                detect_reboot_status(extra_critical_packages=extra_pkgs)
+                if extra_pkgs
+                else detect_reboot_status()
+            )
+        except TypeError:
+            status = detect_reboot_status()
         if status.required:
             reason = (status.reason or "reboot required").rstrip(".")
             return CheckResult(
@@ -868,6 +1123,7 @@ class SystemDryRunService:
                     "running_kernel": status.running_kernel,
                     "installed_kernels": status.installed_kernels,
                     "reboot_required": True,
+                    "packages": status.packages,
                 },
             )
 
@@ -887,6 +1143,7 @@ class SystemDryRunService:
                 "running_kernel": status.running_kernel,
                 "installed_kernels": status.installed_kernels,
                 "reboot_required": False,
+                "packages": [],
             },
         )
 
@@ -1485,11 +1742,13 @@ class SystemUpgradeService:
         aur_helper_fn: Callable[[], str | None] = detect_aur_helper,
         snapshot_tool_fn: Callable[[], str | None] = detect_snapshot_tool,
         config: DotDoctorConfig | None = None,
+        reboot_fn: Callable[[], bool] | None = None,
     ) -> None:
         self._is_online_fn = is_online_fn
         self._aur_helper_fn = aur_helper_fn
         self._snapshot_tool_fn = snapshot_tool_fn
         self.config = config or DotDoctorConfig()
+        self._reboot_fn = reboot_fn
         self.reinstall_packages: list[str] = []
         self._last_step_output = ""
         self._keyring_steps = 0
@@ -1870,12 +2129,22 @@ class SystemUpgradeService:
             elif created_snap == "timeshift":
                 console.print("\n[dim]Rollback available: sudo timeshift --restore[/dim]")
 
-        reboot_status = detect_reboot_status()
+        extra_pkgs = getattr(self.config.maintenance, "extra_reboot_packages", [])
+        try:
+            reboot_status = (
+                detect_reboot_status(extra_critical_packages=extra_pkgs)
+                if extra_pkgs
+                else detect_reboot_status()
+            )
+        except TypeError:
+            reboot_status = detect_reboot_status()
         if reboot_status.required:
             console.print(
                 f"\n[bold yellow]System reboot recommended:[/bold yellow] "
                 f"[yellow]{reboot_status.reason}[/yellow]"
             )
+            if self._confirm("System reboot is recommended. Reboot the system now?"):
+                self._trigger_reboot(console)
         return 2 if had_error else 0
 
     @staticmethod
@@ -1957,10 +2226,55 @@ class SystemUpgradeService:
 
     @staticmethod
     def _confirm(prompt: str) -> bool:
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        if not (interactive or "PYTEST_CURRENT_TEST" in os.environ):
+            return False
         try:
             return typer.confirm(prompt, default=False)
-        except (typer.Abort, EOFError):
+        except (typer.Abort, EOFError, Exception):
             return False
+
+    def _trigger_reboot(self, console: Console) -> bool:
+        if self._reboot_fn is not None:
+            return self._reboot_fn()
+
+        base_reboot = (
+            ["systemctl", "--no-ask-password", "reboot"]
+            if shutil.which("systemctl")
+            else ["reboot"]
+        )
+        cmd = base_reboot if os.geteuid() == 0 else ["sudo", "-n", *base_reboot]
+        console.print("  [dim]Requesting system reboot[/dim]")
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        except subprocess.TimeoutExpired:
+            console.print(
+                "[yellow]Reboot request timed out. "
+                "Please reboot manually: sudo systemctl reboot[/yellow]"
+            )
+            return False
+        except (OSError, subprocess.SubprocessError) as exc:
+            console.print(f"[red]Reboot command failed:[/red] {escape(str(exc))}")
+            return False
+
+        if res.returncode == 0:
+            console.print("[green]Reboot request accepted. System will reboot now.[/green]")
+            return True
+
+        if os.geteuid() != 0 and shutil.which("sudo"):
+            try:
+                res_interactive = subprocess.run(["sudo", *base_reboot], timeout=30)
+                if res_interactive.returncode == 0:
+                    console.print("[green]Reboot request accepted. System will reboot now.[/green]")
+                    return True
+            except Exception:
+                pass
+
+        console.print(
+            f"[red]Reboot command failed (exit={res.returncode}). "
+            f"Please reboot manually: sudo systemctl reboot[/red]"
+        )
+        return False
 
     def _prepare_keyring(self, console: Console, force: bool = False) -> bool:
         self._keyring_steps = 0

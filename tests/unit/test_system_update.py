@@ -19,6 +19,9 @@ from dotdoctor.application.system_update import (
     detect_disk_space_status,
     detect_pacnew_files,
     detect_reboot_status,
+    find_pacman_critical_upgrades,
+    find_processes_with_deleted_libraries,
+    is_critical_reboot_package,
     is_online,
 )
 from dotdoctor.domain.context import ScanContext
@@ -525,6 +528,207 @@ def test_detect_reboot_status_marker_file_with_packages(tmp_path: Path) -> None:
     )
     assert status.required is True
     assert "linux, systemd" in status.reason
+
+
+def test_is_critical_reboot_package() -> None:
+    assert is_critical_reboot_package("mesa") is True
+    assert is_critical_reboot_package("vulkan-intel") is True
+    assert is_critical_reboot_package("vulkan-mesa-implicit-layers") is True
+    assert is_critical_reboot_package("nvidia") is True
+    assert is_critical_reboot_package("nvidia-utils") is True
+    assert is_critical_reboot_package("nvidia-open-dkms") is True
+    assert is_critical_reboot_package("broadcom-wl-dkms") is True
+    assert is_critical_reboot_package("linux") is True
+    assert is_critical_reboot_package("linux-zen") is True
+    assert is_critical_reboot_package("linux-headers") is False
+    assert is_critical_reboot_package("systemd") is True
+    assert is_critical_reboot_package("glibc") is True
+    assert is_critical_reboot_package("hyprland") is True
+    assert is_critical_reboot_package("wayland") is True
+    assert is_critical_reboot_package("pipewire") is True
+    assert is_critical_reboot_package("kitty") is False
+    assert is_critical_reboot_package("custom-app", extra_packages=["custom-app"]) is True
+
+
+def test_find_pacman_critical_upgrades_detects_recent_packages(tmp_path: Path) -> None:
+    from datetime import datetime
+
+    log_file = tmp_path / "pacman.log"
+    log_file.write_text(
+        "[2026-11-20T10:00:00+0100] [ALPM] upgraded linux (7.1.0 -> 7.1.1)\n"
+        "[2026-11-24T12:00:00+0100] [ALPM] upgraded kitty (0.50.0 -> 0.51.0)\n"
+        "[2026-11-24T12:05:00+0100] [ALPM] upgraded mesa (1:26.3.1-2 -> 1:26.3.1-3)\n"
+        "[2026-11-24T12:05:00+0100] [ALPM] upgraded vulkan-intel (1:26.3.1-2 -> 1:26.3.1-3)\n",
+        encoding="utf-8",
+    )
+    boot_ts = datetime.fromisoformat("2026-11-24T11:00:00+0100").timestamp()
+
+    upgrades = find_pacman_critical_upgrades(log_file, since_timestamp=boot_ts)
+    assert upgrades == ["mesa", "vulkan-intel"]
+
+
+def test_find_pacman_critical_upgrades_ignores_older_packages(tmp_path: Path) -> None:
+    from datetime import datetime
+
+    log_file = tmp_path / "pacman.log"
+    log_file.write_text(
+        "[2026-11-20T10:00:00+0100] [ALPM] upgraded mesa (1:26.3.1-2 -> 1:26.3.1-3)\n",
+        encoding="utf-8",
+    )
+    boot_ts = datetime.fromisoformat("2026-11-24T11:00:00+0100").timestamp()
+    upgrades = find_pacman_critical_upgrades(log_file, since_timestamp=boot_ts)
+    assert upgrades == []
+
+
+def test_find_processes_with_deleted_libraries(tmp_path: Path) -> None:
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+
+    # Process 1: holds deleted mesa
+    p1 = proc_dir / "1234"
+    p1.mkdir()
+    (p1 / "comm").write_text("Hyprland\n", encoding="utf-8")
+    (p1 / "maps").write_text(
+        "7f8a1000-7f8a2000 r-xp 00000000 00:00 1234 /usr/lib/libGLX_mesa.so.0.0.0 (deleted)\n",
+        encoding="utf-8",
+    )
+
+    # Process 2: holds deleted non-critical cache
+    p2 = proc_dir / "5678"
+    p2.mkdir()
+    (p2 / "comm").write_text("bash\n", encoding="utf-8")
+    (p2 / "maps").write_text(
+        "7f8a1000-7f8a2000 r-xp 00000000 00:00 1234 /etc/ld.so.cache (deleted)\n",
+        encoding="utf-8",
+    )
+
+    # Process 3: holds deleted non-critical library
+    p3 = proc_dir / "9012"
+    p3.mkdir()
+    (p3 / "comm").write_text("custom\n", encoding="utf-8")
+    (p3 / "maps").write_text(
+        "7f8a1000-7f8a2000 r-xp 00000000 00:00 1234 /usr/lib/libunrelated.so.1 (deleted)\n",
+        encoding="utf-8",
+    )
+
+    procs = find_processes_with_deleted_libraries(proc_dir=proc_dir)
+    assert procs == ["Hyprland"]
+
+
+def test_detect_reboot_status_pacman_log_critical(tmp_path: Path) -> None:
+    from datetime import datetime
+
+    modules_dir = tmp_path / "modules"
+    (modules_dir / "7.1.9").mkdir(parents=True)
+    log_file = tmp_path / "pacman.log"
+    log_file.write_text(
+        "[2026-11-24T12:05:00+0100] [ALPM] upgraded mesa (1:26.3.1-2 -> 1:26.3.1-3)\n",
+        encoding="utf-8",
+    )
+    boot_ts = datetime.fromisoformat("2026-11-24T11:00:00+0100").timestamp()
+
+    status = detect_reboot_status(
+        modules_dir=modules_dir,
+        running_kernel="7.1.9",
+        marker_paths=(),
+        pacman_log=log_file,
+        boot_time=boot_ts,
+        proc_dir=None,
+    )
+    assert status.required is True
+    assert "mesa" in status.reason
+    assert status.packages == ["mesa"]
+
+
+def test_detect_reboot_status_deleted_libraries(tmp_path: Path) -> None:
+    modules_dir = tmp_path / "modules"
+    (modules_dir / "7.1.9").mkdir(parents=True)
+    proc_dir = tmp_path / "proc"
+    p1 = proc_dir / "1234"
+    p1.mkdir(parents=True)
+    (p1 / "comm").write_text("Hyprland\n", encoding="utf-8")
+    (p1 / "maps").write_text(
+        "7f8a1000-7f8a2000 r-xp 00000000 00:00 1234 /usr/lib/libGLX_mesa.so.0.0.0 (deleted)\n",
+        encoding="utf-8",
+    )
+
+    status = detect_reboot_status(
+        modules_dir=modules_dir,
+        running_kernel="7.1.9",
+        marker_paths=(),
+        pacman_log=None,
+        proc_dir=proc_dir,
+    )
+    assert status.required is True
+    assert "Hyprland" in status.reason
+
+
+def test_system_upgrade_prompts_and_reboots_when_needed(monkeypatch, tmp_path: Path) -> None:
+    reboot_triggered = []
+    service = SystemUpgradeService(
+        reboot_fn=lambda: reboot_triggered.append(True) or True,
+        snapshot_tool_fn=lambda: None,
+    )
+    console = DummyConsole()
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.shutil.which",
+        lambda _: "/usr/bin/echo",
+    )
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.detect_reboot_status",
+        lambda **kwargs: RebootStatus(
+            required=True,
+            reason="Critical system packages updated since boot (mesa).",
+            running_kernel="7.1.9",
+            installed_kernels=["7.1.9"],
+            packages=["mesa"],
+        ),
+    )
+    monkeypatch.setattr(service, "_confirm", lambda prompt: True)
+
+    code = service.run(_context(tmp_path), console)
+    assert code == 0
+    assert reboot_triggered == [True]
+    assert any("System reboot recommended" in m for m in console.messages)
+
+
+def test_system_upgrade_declining_reboot_does_not_reboot(monkeypatch, tmp_path: Path) -> None:
+    reboot_triggered = []
+    service = SystemUpgradeService(
+        reboot_fn=lambda: reboot_triggered.append(True) or True,
+        snapshot_tool_fn=lambda: None,
+    )
+    console = DummyConsole()
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.shutil.which",
+        lambda _: "/usr/bin/echo",
+    )
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.detect_reboot_status",
+        lambda **kwargs: RebootStatus(
+            required=True,
+            reason="Critical system packages updated since boot (mesa).",
+            running_kernel="7.1.9",
+            installed_kernels=["7.1.9"],
+            packages=["mesa"],
+        ),
+    )
+    monkeypatch.setattr(service, "_confirm", lambda prompt: False)
+
+    code = service.run(_context(tmp_path), console)
+    assert code == 0
+    assert reboot_triggered == []
+    assert any("System reboot recommended" in m for m in console.messages)
 
 
 def test_system_dry_run_warns_when_reboot_required(monkeypatch, tmp_path: Path) -> None:

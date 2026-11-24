@@ -27,6 +27,7 @@ class MaintenanceConfig(BaseModel):
     backup: BackupConfig | None = None
     scrub_max_age_days: int = Field(default=30, ge=1, le=365)
     integrity_timeout_seconds: int = Field(default=60, ge=1, le=600)
+    extra_reboot_packages: list[str] = Field(default_factory=list)
 
 
 class DotDoctorConfig(BaseModel):
