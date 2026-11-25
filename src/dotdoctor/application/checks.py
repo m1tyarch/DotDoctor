@@ -10,7 +10,6 @@ from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 
-import dotdoctor.application.system_update as su
 from dotdoctor.application.check_common import (
     ALL_CHECK_IDS,
     CATEGORY_ALIASES,
@@ -22,6 +21,7 @@ from dotdoctor.application.check_common import (
     _resolve_oh_my_zsh_path,
     _result_for_count,
     _run_capture,
+    _su,
     _unverified,
     detect_aur_helper,
     detect_pacnew_files,
@@ -131,7 +131,7 @@ class SystemDryRunService(UpdatesChecksMixin, HygieneChecksMixin, RuntimeChecksM
 
                     def _run_probe() -> None:
                         try:
-                            online_fn = getattr(su, "is_online", self._is_online_fn)
+                            online_fn = getattr(_su(), "is_online", self._is_online_fn)
                             res = (
                                 self._is_online_fn()
                                 if self._is_online_fn is not is_online
@@ -171,7 +171,7 @@ class SystemDryRunService(UpdatesChecksMixin, HygieneChecksMixin, RuntimeChecksM
             )
 
         if needs_network:
-            which_fn = getattr(su, "shutil", shutil).which
+            which_fn = getattr(_su(), "shutil", shutil).which
 
             if which_fn("pacman") or which_fn("checkupdates"):
 
@@ -265,7 +265,7 @@ class SystemDryRunService(UpdatesChecksMixin, HygieneChecksMixin, RuntimeChecksM
             )
         )
 
-        which_fn = getattr(su, "shutil", shutil).which
+        which_fn = getattr(_su(), "shutil", shutil).which
         if which_fn("pacman") is not None:
             _add_task(
                 SystemCheckTask(
@@ -320,6 +320,7 @@ class SystemDryRunService(UpdatesChecksMixin, HygieneChecksMixin, RuntimeChecksM
                 )
             )
 
+        su = _su()
         maint_cls = getattr(su, "MaintenanceChecks", MaintenanceChecks)
         for cid, label, runner in maint_cls(self.config).registrations(context):
             if needs_network and cid in {"sys.news", "sys.security"}:
@@ -416,7 +417,7 @@ class SystemDryRunService(UpdatesChecksMixin, HygieneChecksMixin, RuntimeChecksM
             }
             pending = set(futures.keys())
             try:
-                wait_fn = getattr(su, "wait", wait)
+                wait_fn = getattr(_su(), "wait", wait)
                 while pending:
                     done, pending = wait_fn(pending, timeout=0.1, return_when=FIRST_COMPLETED)
                     for future in done:

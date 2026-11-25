@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import shutil
 
-import dotdoctor.application.system_update as su
 from dotdoctor.application.check_common import (
     _detect_oh_my_zsh_updates,
     _result_for_count,
     _run_capture,
+    _su,
     _unverified,
 )
 from dotdoctor.application.parsers import (
@@ -27,6 +28,7 @@ class UpdatesChecksMixin:
     """Read-only checks for available package, firmware, and shell updates."""
 
     def _check_arch_packages(self, context: ScanContext) -> CheckResult:
+        su = _su()
         which_fn = getattr(su, "shutil", shutil).which
         if which_fn("checkupdates") is None:
             if which_fn("pacman") is None:
@@ -113,6 +115,7 @@ class UpdatesChecksMixin:
         )
 
     def _check_aur_packages(self, context: ScanContext, aur_helper: str = "yay") -> CheckResult:
+        su = _su()
         run_cap = getattr(su, "_run_capture", _run_capture)
         result = run_cap([aur_helper, "-Qua"], timeout=60)
         if result.timed_out:
@@ -185,6 +188,7 @@ class UpdatesChecksMixin:
         )
 
     def _check_flatpak(self, context: ScanContext) -> CheckResult:
+        su = _su()
         which_fn = getattr(su, "shutil", shutil).which
         if which_fn("flatpak") is None:
             return _unverified("sys.flatpak", "flatpak not installed")
@@ -224,6 +228,7 @@ class UpdatesChecksMixin:
         )
 
     def _check_firmware(self, context: ScanContext) -> CheckResult:
+        su = _su()
         which_fn = getattr(su, "shutil", shutil).which
         if which_fn("fwupdmgr") is None:
             return _unverified("sys.firmware", "fwupd not installed")
@@ -304,7 +309,7 @@ class UpdatesChecksMixin:
         return _result_for_count("sys.firmware", update_count)
 
     def _check_oh_my_zsh(self, omz_path: str) -> CheckResult:
-        if su.os.geteuid() == 0:
+        if os.geteuid() == 0:
             return CheckResult(
                 check_id="sys.shell-omz",
                 severity=Severity.SKIP,
@@ -312,7 +317,7 @@ class UpdatesChecksMixin:
                 remediation=None,
                 details={"updates": 0},
             )
-        detect_omz_fn = getattr(su, "_detect_oh_my_zsh_updates", _detect_oh_my_zsh_updates)
+        detect_omz_fn = getattr(_su(), "_detect_oh_my_zsh_updates", _detect_oh_my_zsh_updates)
         update_count = detect_omz_fn(omz_path)
         if update_count is None:
             return _unverified(

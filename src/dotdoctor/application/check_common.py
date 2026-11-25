@@ -12,13 +12,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import dotdoctor.application.system_update as su
 from dotdoctor.application.maintenance import PREFLIGHT_IDS
 from dotdoctor.domain.context import ScanContext
 from dotdoctor.domain.models import CheckResult, Severity
 from dotdoctor.infrastructure.audit_processes import capture as capture_command
 from dotdoctor.infrastructure.audit_processes import check_cancelled
 from dotdoctor.infrastructure.network_worker import HTTPS_TARGETS
+
+
+def _su() -> Any:
+    import dotdoctor.application.system_update as su
+
+    return su
 
 
 def is_online(
@@ -29,7 +34,7 @@ def is_online(
     if not targets or timeout <= 0:
         return False
     try:
-        cap_fn = getattr(su, "capture_command", capture_command)
+        cap_fn = getattr(_su(), "capture_command", capture_command)
         completed = cap_fn(
             [
                 sys.executable,
@@ -90,7 +95,7 @@ def _result_for_count(check_id: str, updates: int) -> CheckResult:
 
 
 def detect_aur_helper(which_fn: Callable[[str], str | None] | None = None) -> str | None:
-    fn = which_fn or getattr(su, "shutil", shutil).which
+    fn = which_fn or getattr(_su(), "shutil", shutil).which
     for helper in ("paru", "yay"):
         if fn(helper) is not None:
             return helper
@@ -102,6 +107,7 @@ def _run_capture(
     timeout: int,
     input_str: str | None = None,
 ) -> _ExecResult:
+    su = _su()
     custom_run_cap = getattr(su, "_run_capture", None)
     if custom_run_cap is not None and custom_run_cap is not _run_capture:
         res = custom_run_cap(command, timeout=timeout)
@@ -121,6 +127,7 @@ def _run_capture(
 
 
 def detect_pacnew_files() -> list[str]:
+    su = _su()
     which_fn = getattr(su, "shutil", shutil).which
     pacdiff_bin = which_fn("pacdiff")
     if pacdiff_bin is not None:
@@ -164,6 +171,7 @@ def _resolve_oh_my_zsh_path(context: ScanContext) -> str | None:
 
 
 def _detect_oh_my_zsh_updates(omz_path: str) -> int | None:
+    su = _su()
     which_fn = getattr(su, "shutil", shutil).which
     if which_fn("git") is None:
         return None

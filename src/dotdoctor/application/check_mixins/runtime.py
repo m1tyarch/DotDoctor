@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import shutil
 
-import dotdoctor.application.system_update as su
-from dotdoctor.application.check_common import _run_capture, _unverified
+from dotdoctor.application.check_common import _run_capture, _su, _unverified
 from dotdoctor.application.disk import detect_disk_space_status
 from dotdoctor.application.reboot import detect_reboot_status
 from dotdoctor.domain.config import DotDoctorConfig
@@ -20,7 +19,7 @@ class RuntimeChecksMixin:
 
     def _check_reboot(self, context: ScanContext) -> CheckResult:
         extra_pkgs = getattr(self.config.maintenance, "extra_reboot_packages", [])
-        detect_reboot_fn = getattr(su, "detect_reboot_status", detect_reboot_status)
+        detect_reboot_fn = getattr(_su(), "detect_reboot_status", detect_reboot_status)
         try:
             status = (
                 detect_reboot_fn(extra_critical_packages=extra_pkgs)
@@ -65,7 +64,7 @@ class RuntimeChecksMixin:
         )
 
     def _check_disk_space(self, context: ScanContext) -> CheckResult:
-        detect_disk_fn = getattr(su, "detect_disk_space_status", detect_disk_space_status)
+        detect_disk_fn = getattr(_su(), "detect_disk_space_status", detect_disk_space_status)
         status = detect_disk_fn()
         return CheckResult(
             check_id="sys.disk",
@@ -79,6 +78,7 @@ class RuntimeChecksMixin:
         )
 
     def _check_failed_services(self, context: ScanContext) -> CheckResult:
+        su = _su()
         which_fn = getattr(su, "shutil", shutil).which
         if which_fn("systemctl") is None:
             return _unverified("sys.services", "systemctl not installed")

@@ -7,8 +7,7 @@ import re
 import shutil
 from pathlib import Path
 
-import dotdoctor.application.system_update as su
-from dotdoctor.application.check_common import _run_capture, _unverified, detect_pacnew_files
+from dotdoctor.application.check_common import _run_capture, _su, _unverified, detect_pacnew_files
 from dotdoctor.application.disk import _format_bytes
 from dotdoctor.domain.context import ScanContext
 from dotdoctor.domain.models import CheckResult, Severity
@@ -49,6 +48,7 @@ class HygieneChecksMixin:
                 "sys.cache", "pacman cache could not be inspected", "du -sh /var/cache/pacman/pkg"
             )
 
+        su = _su()
         format_bytes_fn = getattr(su, "_format_bytes", _format_bytes)
         total_str = format_bytes_fn(total_bytes)
         candidates = 0
@@ -118,6 +118,7 @@ class HygieneChecksMixin:
         )
 
     def _check_orphans(self, context: ScanContext) -> CheckResult:
+        su = _su()
         which_fn = getattr(su, "shutil", shutil).which
         if which_fn("pacman") is None:
             return _unverified("sys.orphans", "pacman not installed")
@@ -167,7 +168,7 @@ class HygieneChecksMixin:
         )
 
     def _check_pacnew(self, context: ScanContext) -> CheckResult:
-        detect_pacnew_fn = getattr(su, "detect_pacnew_files", detect_pacnew_files)
+        detect_pacnew_fn = getattr(_su(), "detect_pacnew_files", detect_pacnew_files)
         files = detect_pacnew_fn()
         if files:
             count = len(files)
@@ -190,6 +191,7 @@ class HygieneChecksMixin:
         )
 
     def _check_flatpak_unused(self, context: ScanContext) -> CheckResult:
+        su = _su()
         which_fn = getattr(su, "shutil", shutil).which
         if which_fn("flatpak") is None:
             return _unverified("sys.flatpak-unused", "flatpak not installed")
@@ -248,6 +250,7 @@ class HygieneChecksMixin:
         )
 
     def _check_journal(self, context: ScanContext) -> CheckResult:
+        su = _su()
         which_fn = getattr(su, "shutil", shutil).which
         if which_fn("journalctl") is None:
             return _unverified("sys.journal", "journalctl not installed")
