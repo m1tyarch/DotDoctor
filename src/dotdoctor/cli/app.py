@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import click.exceptions as _click_exceptions
 import typer
 import typer.rich_utils
 from rich.console import Console
@@ -50,19 +49,24 @@ from dotdoctor.infrastructure.maintenance import MaintenanceState
 
 def _custom_rich_format_error(self: Any) -> None:
     console = Console(stderr=True)
-    if isinstance(self, _click_exceptions.NoSuchOption):
-        opt = self.option_name
-        if self.possibilities:
-            possibilities_str = ", or ".join(self.possibilities)
+    exc_name = type(self).__name__
+    if exc_name == "NoSuchOption" or hasattr(self, "option_name"):
+        opt = getattr(self, "option_name", "")
+        possibilities = getattr(self, "possibilities", None)
+        if possibilities:
+            possibilities_str = ", or ".join(possibilities)
             msg = f"unknown option {opt}. Did you mean {possibilities_str}?"
         else:
             msg = f"unknown option {opt}. Run 'dotdoctor --help' for usage."
-    elif isinstance(self, _click_exceptions.BadParameter):
-        msg = getattr(self, "message", None) or self.format_message()
+    elif exc_name == "BadParameter" or isinstance(self, typer.BadParameter):
+        format_msg = getattr(self, "format_message", None)
+        msg = getattr(self, "message", None) or (
+            format_msg() if callable(format_msg) else str(self)
+        )
         if msg.startswith("Invalid value: "):
             msg = msg[len("Invalid value: ") :]
-    elif isinstance(self, _click_exceptions.ClickException):
-        msg = self.format_message()
+    elif callable(getattr(self, "format_message", None)):
+        msg = str(self.format_message())
     else:
         msg = str(self)
 
@@ -247,7 +251,9 @@ def set_can_prompt(value: bool | None) -> None:
 def _can_prompt() -> bool:
     if _CAN_PROMPT_INJECTED is not None:
         return _CAN_PROMPT_INJECTED
-    if getattr(sys.stdin, "__module__", "").startswith(("click.testing", "typer.testing")):
+    if getattr(sys.stdin, "__module__", "").startswith(
+        ("click.testing", "typer.testing", "typer._click.testing")
+    ):
         return True
     return sys.stdin.isatty() and sys.stdout.isatty()
 

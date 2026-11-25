@@ -658,7 +658,7 @@ class SystemUpgradeService:
             else (
                 (sys.stdin.isatty() and sys.stdout.isatty())
                 or getattr(sys.stdin, "__module__", "").startswith(
-                    ("click.testing", "typer.testing", "_pytest.capture")
+                    ("click.testing", "typer.testing", "typer._click.testing", "_pytest.capture")
                 )
             )
         )
