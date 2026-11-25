@@ -17,10 +17,15 @@ from dotdoctor.cli.theme import (
     STATUS_WARN,
     STATUS_WIDTH,
     STYLE_FAIL,
+    STYLE_MUTED,
     STYLE_OLD,
+    emit_osc_progress,
+    format_duration_ms,
     format_header,
+    format_relative_age,
     format_status_line,
     format_sysup_summary,
+    supports_osc_progress,
 )
 
 
@@ -33,6 +38,33 @@ def test_format_header() -> None:
     assert not any(getattr(span.style, "italic", False) for span in header.spans)
     # No exclamation mark or ellipsis
     assert "!" not in header.plain and "..." not in header.plain
+
+
+def test_format_header_with_detail() -> None:
+    header = format_header("system", detail="last update 3d ago")
+    assert header.plain == "DotDoctor · system · last update 3d ago"
+    spans = {header.plain[s.start : s.end]: s.style for s in header.spans}
+    assert spans.get("system") == STYLE_MUTED
+    assert spans.get(" · last update 3d ago") == STYLE_MUTED
+
+    header_none = format_header("system", detail=None)
+    assert header_none.plain == "DotDoctor · system"
+
+
+def test_format_relative_age() -> None:
+    now = 1_700_000_000.0
+    assert format_relative_age(now, now=now) == "just now"
+    assert format_relative_age(now - 59, now=now) == "just now"
+    assert format_relative_age(now + 30, now=now) == "just now"
+    assert format_relative_age(now + 61, now=now) is None
+    assert format_relative_age(-1.0, now=now) is None
+    assert format_relative_age(float("nan"), now=now) is None
+    assert format_relative_age(now - 60, now=now) == "1m ago"
+    assert format_relative_age(now - 3599, now=now) == "59m ago"
+    assert format_relative_age(now - 3600, now=now) == "1h ago"
+    assert format_relative_age(now - 86399, now=now) == "23h ago"
+    assert format_relative_age(now - 86400, now=now) == "1d ago"
+    assert format_relative_age(now - 3 * 86400, now=now) == "3d ago"
 
 
 def test_cyan_only_in_old_status() -> None:
@@ -151,3 +183,42 @@ def test_no_ansi_when_no_color() -> None:
     assert "DotDoctor · system update" in rendered
     assert "DONE  Pacman cache cleanup (keep 2 versions)" in rendered
     assert "6 done · 1 failed · 2 skipped" in rendered
+
+
+def test_format_duration_ms() -> None:
+    assert format_duration_ms(0.0002) == "<1ms"
+    assert format_duration_ms(0.001) == "1ms"
+    assert format_duration_ms(0.245) == "245ms"
+    assert format_duration_ms(0.9999) == "1.0s"
+    assert format_duration_ms(1.42) == "1.4s"
+    assert format_duration_ms(10.0) == "10s"
+    assert format_duration_ms(-1.0) == "0ms"
+
+
+def test_emit_osc_progress_respects_tty_and_suppression(monkeypatch) -> None:
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("NO_ANIMATION", raising=False)
+    monkeypatch.delenv("DOTDOCTOR_NO_ANIMATION", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    tty_buf = io.StringIO()
+    tty_console = Console(file=tty_buf, force_terminal=True)
+    assert supports_osc_progress(tty_console) is True
+    emit_osc_progress(tty_console, 50, state=1)
+    emit_osc_progress(tty_console, 150, state=2)
+    emit_osc_progress(tty_console, None, state=0)
+    assert tty_buf.getvalue() == "\x1b]9;4;1;50\x07\x1b]9;4;2;100\x07\x1b]9;4;0\x07"
+
+    nontty_buf = io.StringIO()
+    nontty_console = Console(file=nontty_buf, force_terminal=False)
+    assert supports_osc_progress(nontty_console) is False
+    emit_osc_progress(nontty_console, 50, state=1)
+    emit_osc_progress(nontty_console, None, state=0)
+    assert nontty_buf.getvalue() == ""
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    no_color_buf = io.StringIO()
+    no_color_console = Console(file=no_color_buf, force_terminal=True)
+    assert supports_osc_progress(no_color_console) is False
+    emit_osc_progress(no_color_console, 50, state=1)
+    assert no_color_buf.getvalue() == ""

@@ -1348,3 +1348,82 @@ def test_installed_tools_are_registered(monkeypatch, tmp_path):
     assert "sys.rebuild" in registered_ids
     assert "sys.smart" in registered_ids
     assert "sys.btrfs" in registered_ids
+
+
+def test_maintenance_state_sysup_timestamp_roundtrip_and_preserves_news(tmp_path):
+    state = readers.MaintenanceState(tmp_path / "maintenance.json")
+    assert state.read_last_sysup() is None
+
+    state.acknowledge_news(["https://archlinux.org/news/test/"])
+    assert state.read_last_sysup() is None
+
+    state.record_sysup(1700000123.5)
+    assert state.read_last_sysup() == 1700000123.5
+    assert state.read()["news"] == ["https://archlinux.org/news/test/"]
+
+    state.acknowledge_news(["https://archlinux.org/news/second/"])
+    assert state.read_last_sysup() == 1700000123.5
+    assert state.read()["news"] == [
+        "https://archlinux.org/news/test/",
+        "https://archlinux.org/news/second/",
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "{broken",
+        "[]",
+        '{"news": {}}',
+        '{"last_sysup_at": "invalid"}',
+        '{"last_sysup_at": -5}',
+        '{"last_sysup_at": true}',
+        '{"last_sysup_at": null}',
+    ],
+)
+def test_maintenance_state_read_last_sysup_handles_invalid_data(tmp_path, payload):
+    state = readers.MaintenanceState(tmp_path / "maintenance.json")
+    state.path.write_text(payload, encoding="utf-8")
+    assert state.read_last_sysup() is None
+
+
+def test_maintenance_state_record_sysup_resets_corrupt_json(tmp_path):
+    state = readers.MaintenanceState(tmp_path / "maintenance.json")
+    state.path.write_text("{broken", encoding="utf-8")
+    state.record_sysup(1700000500.0)
+    assert state.read_last_sysup() == 1700000500.0
+
+
+def test_mounts_uses_binary_iec_units(monkeypatch):
+    monkeypatch.setattr(
+        m,
+        "mounted_filesystems",
+        lambda: [
+            {"target": "/", "options": "rw"},
+            {"target": "/boot/efi", "options": "rw"},
+        ],
+    )
+
+    def statvfs(target):
+        if target == "/":
+            return SimpleNamespace(
+                f_bavail=512 * 1024,
+                f_frsize=1,
+                f_blocks=10 * 1024**3,
+                f_files=1000,
+                f_favail=500,
+            )
+        return SimpleNamespace(
+            f_bavail=2 * 1024**2,
+            f_frsize=1,
+            f_blocks=96 * 1024**2,
+            f_files=1000,
+            f_favail=500,
+        )
+
+    monkeypatch.setattr(m.os, "statvfs", statvfs)
+    result = m.MaintenanceChecks().mounts()
+    assert result.severity == Severity.FAIL
+    items = result.details["items"]
+    assert "/: critically low available space (512.0 KiB free, minimum 500.0 MiB)" in items
+    assert "/boot/efi: critically low available space (2.0 MiB free, minimum 9.6 MiB)" in items

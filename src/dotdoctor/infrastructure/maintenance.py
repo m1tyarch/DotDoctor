@@ -1,10 +1,12 @@
 """Bounded, non-interactive readers used by maintenance checks."""
 
 import json
+import math
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -176,12 +178,13 @@ class MaintenanceState:
             raise ValueError("invalid maintenance state")
         return data
 
-    def acknowledge_news(self, urls: list[str]) -> None:
+    def _read_for_update(self) -> dict[str, Any]:
         try:
-            data = self.read()
+            return self.read()
         except (ValueError, OSError):
-            data = {}
-        data["news"] = list(dict.fromkeys([*data.get("news", []), *urls]))[-200:]
+            return {}
+
+    def _write_atomic(self, data: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(dir=self.path.parent, prefix=".maintenance-")
         try:
@@ -192,6 +195,36 @@ class MaintenanceState:
         finally:
             if os.path.exists(name):
                 os.unlink(name)
+
+    def acknowledge_news(self, urls: list[str]) -> None:
+        data = self._read_for_update()
+        data["news"] = list(dict.fromkeys([*data.get("news", []), *urls]))[-200:]
+        self._write_atomic(data)
+
+    def read_last_sysup(self) -> float | None:
+        try:
+            data = self.read()
+        except (ValueError, OSError):
+            return None
+        value = data.get("last_sysup_at")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        ts = float(value)
+        if not math.isfinite(ts) or ts < 0:
+            return None
+        return ts
+
+    def record_sysup(self, timestamp: float | None = None) -> None:
+        if timestamp is not None and (
+            isinstance(timestamp, bool) or not isinstance(timestamp, (int, float))
+        ):
+            raise ValueError("invalid sysup timestamp")
+        ts = time.time() if timestamp is None else float(timestamp)
+        if not math.isfinite(ts) or ts < 0:
+            raise ValueError("invalid sysup timestamp")
+        data = self._read_for_update()
+        data["last_sysup_at"] = ts
+        self._write_atomic(data)
 
     @staticmethod
     def _fix_ownership(path: Path) -> None:

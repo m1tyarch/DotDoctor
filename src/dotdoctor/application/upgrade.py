@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -44,6 +45,7 @@ from dotdoctor.cli.theme import (
     STATUS_FAIL,
     STATUS_SKIP,
     STATUS_WIDTH,
+    emit_osc_progress,
     format_status_line,
     format_sysup_summary,
 )
@@ -53,6 +55,7 @@ from dotdoctor.domain.models import CheckResult, Severity
 from dotdoctor.infrastructure.maintenance import MaintenanceState, capture
 
 _ORIGINAL_SUBPROCESS_RUN = subprocess.run
+logger = logging.getLogger(__name__)
 
 
 def detect_snapshot_tool() -> str | None:
@@ -128,7 +131,10 @@ class SystemUpgradeService:
 
     def run(self, context: ScanContext, console: Console) -> int:
         with self._sudo_keepalive():
-            return self._run_impl(context, console)
+            try:
+                return self._run_impl(context, console)
+            finally:
+                emit_osc_progress(console, None, state=0)
 
     def _run_impl(self, context: ScanContext, console: Console) -> int:
         # Authentication is the first operation after upgrade confirmation.
@@ -181,9 +187,11 @@ class SystemUpgradeService:
                 f"[yellow]Warning: {disk_status.message} Proceeding with caution[/yellow]"
             )
 
+        emit_osc_progress(console, 5, state=1)
         if not self._maintenance_preflight(context, console):
             return 2
 
+        emit_osc_progress(console, 15, state=1)
         had_error = False
         any_updates = False
         done_count = 0
@@ -210,6 +218,7 @@ class SystemUpgradeService:
                 console.print(line)
             return 2
 
+        emit_osc_progress(console, 25, state=1)
         mirror_err, mirror_status = self._refresh_mirrors(console)
         had_error |= mirror_err
         if mirror_status == "done":
@@ -221,11 +230,13 @@ class SystemUpgradeService:
 
         # Prepare a newly available keyring before the full upgrade. Never leave a
         # synchronized database behind and proceed with unrelated package installs.
+        emit_osc_progress(console, 35, state=1)
         if not self._prepare_keyring(console):
             return 2
         done_count += self._keyring_steps
         any_updates |= self._keyring_updated
 
+        emit_osc_progress(console, 45, state=1)
         aur_helper = (
             getattr(su, "detect_aur_helper", self._aur_helper_fn)()
             if self._aur_helper_fn is detect_aur_helper
@@ -333,6 +344,7 @@ class SystemUpgradeService:
                 console.print(line_text)
             skip_count += 1
 
+        emit_osc_progress(console, 65, state=1)
         if getattr(su, "shutil", shutil).which("flatpak") is not None:
             flatpak_error, _, flatpak_updated = self._run_step(
                 ["flatpak", "update", "-y"], console, "Flatpak update"
@@ -367,6 +379,7 @@ class SystemUpgradeService:
                 console.print(line_text)
             skip_count += 1
 
+        emit_osc_progress(console, 75, state=1)
         if getattr(su, "shutil", shutil).which("paccache") is not None:
             cache_error, _, cache_updated = self._run_step(
                 ["sudo", "paccache", "-rk2"],
@@ -394,6 +407,7 @@ class SystemUpgradeService:
                 if uninstalled_updated:
                     any_updates = True
 
+        emit_osc_progress(console, 83, state=1)
         omz_upgrade = context.home / ".oh-my-zsh" / "tools" / "upgrade.sh"
         if omz_upgrade.exists():
             if os.geteuid() == 0:
@@ -428,6 +442,7 @@ class SystemUpgradeService:
                 console.print(line_text)
             skip_count += 1
 
+        emit_osc_progress(console, 90, state=1)
         if getattr(su, "shutil", shutil).which("fwupdmgr") is not None:
             fw_error, _, fw_updated = self._run_step(
                 ["fwupdmgr", "update", "-y"], console, "Firmware update"
@@ -467,6 +482,7 @@ class SystemUpgradeService:
                 "[yellow]Run 'pacdiff' to review and merge configuration updates.[/yellow]"
             )
 
+        emit_osc_progress(console, 96, state=1)
         maint_cls = getattr(su, "MaintenanceChecks", MaintenanceChecks)
         postflight = maint_cls(self.config).run(context, POSTFLIGHT_IDS)
         for result in postflight:
@@ -535,6 +551,12 @@ class SystemUpgradeService:
             )
             if self._confirm("System reboot is recommended. Reboot the system now?"):
                 self._trigger_reboot(console)
+        if not had_error:
+            state_cls = getattr(su, "MaintenanceState", MaintenanceState)
+            try:
+                state_cls().record_sysup()
+            except (OSError, ValueError) as exc:
+                logger.debug("Failed to record last sysup timestamp: %s", exc)
         return 2 if had_error else 0
 
     @staticmethod

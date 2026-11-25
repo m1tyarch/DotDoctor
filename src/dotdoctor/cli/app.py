@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,18 +25,26 @@ from dotdoctor.application.system_update import (
     SystemDryRunService,
     SystemUpgradeService,
 )
-from dotdoctor.cli.render import format_check_status, render_terminal_report
+from dotdoctor.cli.render import (
+    format_check_status,
+    format_upgrade_preview,
+    render_terminal_report,
+)
 from dotdoctor.cli.theme import (
     GAP,
     INDENT,
     STATUS_SKIP,
     STATUS_WIDTH,
+    STYLE_MUTED,
     STYLE_SKIP,
+    emit_osc_progress,
     format_header,
+    format_relative_age,
 )
 from dotdoctor.domain.context import ScanContext
 from dotdoctor.domain.models import CheckResult, ScanReport, Severity
 from dotdoctor.infrastructure.config_loader import ConfigError, load_config
+from dotdoctor.infrastructure.maintenance import MaintenanceState
 
 
 def _custom_rich_format_error(self: Any) -> None:
@@ -223,6 +232,14 @@ def _safe_confirm(prompt: str, default: bool = False) -> bool:
         return False
 
 
+def _header_detail() -> str | None:
+    last_sysup = MaintenanceState().read_last_sysup()
+    if last_sysup is None:
+        return None
+    age = format_relative_age(last_sysup)
+    return f"last update {age}" if age is not None else None
+
+
 def _run_tasks_with_progress(
     service: SystemDryRunService,
     context: ScanContext,
@@ -235,6 +252,8 @@ def _run_tasks_with_progress(
     results: dict[str, CheckResult | None] = {}
     spinners = {task.check_id: Spinner("dots") for task in tasks}
     id_width = max((len(task.check_id) for task in tasks), default=0)
+    total_tasks = len(tasks)
+    completed_count = 0
 
     def _build_steps_table() -> Table:
         grid = Table.grid(expand=True, padding=0)
@@ -273,24 +292,36 @@ def _run_tasks_with_progress(
     )
 
     if is_interactive:
-        with Live(
-            _build_steps_table(),
-            console=console,
-            transient=True,
-            refresh_per_second=12.5,
-        ) as live:
+        try:
+            emit_osc_progress(console, 0, state=1)
+            with Live(
+                _build_steps_table(),
+                console=console,
+                transient=True,
+                refresh_per_second=12.5,
+            ) as live:
 
-            def _show_result(check_id: str, result: CheckResult | None) -> None:
-                results[check_id] = result
-                live.update(_build_steps_table(), refresh=True)
+                def _show_result(check_id: str, result: CheckResult | None) -> None:
+                    nonlocal completed_count
+                    results[check_id] = result
+                    completed_count += 1
+                    if total_tasks > 0:
+                        emit_osc_progress(
+                            console,
+                            int(completed_count * 100 / total_tasks),
+                            state=1,
+                        )
+                    live.update(_build_steps_table(), refresh=True)
 
-            return service.run_with_progress(
-                context,
-                on_task_result=_show_result,
-                disabled_checks=all_disabled,
-                include_checks=include_checks,
-                tasks=tasks,
-            )
+                return service.run_with_progress(
+                    context,
+                    on_task_result=_show_result,
+                    disabled_checks=all_disabled,
+                    include_checks=include_checks,
+                    tasks=tasks,
+                )
+        finally:
+            emit_osc_progress(console, None, state=0)
     else:
         return service.run_with_progress(
             context,
@@ -350,7 +381,7 @@ def _system_fix_impl(
         path_value=os.environ.get("PATH", ""),
         shell=os.environ.get("SHELL"),  # nosec: B604  # ScanContext parameter, not subprocess
     )
-    console.print(format_header("fix"))
+    console.print(format_header("fix", detail=_header_detail()))
     console.print()
 
     loaded_cfg = loaded_cfg.model_copy(update={"disabled_checks": all_disabled})
@@ -369,6 +400,7 @@ def _system_fix_impl(
         console=console,
         show_all=effective_show_all,
     )
+    check_timings = getattr(service, "last_timings", None)
 
     issues = (
         report.results
@@ -384,6 +416,7 @@ def _system_fix_impl(
                 console,
                 print_header=False,
                 verbose=verbose,
+                check_timings=check_timings,
             )
         else:
             console.print("  [dim green]PASS[/dim green]  System hygiene clean.")
@@ -393,7 +426,13 @@ def _system_fix_impl(
 
     # Show only actionable findings
     issues_report = ScanReport(profile="system", results=issues)
-    render_terminal_report(issues_report, console, print_header=False, verbose=verbose)
+    render_terminal_report(
+        issues_report,
+        console,
+        print_header=False,
+        verbose=verbose,
+        check_timings=check_timings,
+    )
     console.print()
 
     fixer = InteractiveAutoFixer(console, config=loaded_cfg)
@@ -430,15 +469,13 @@ def _system_upgrade_impl(
         path_value=os.environ.get("PATH", ""),
         shell=os.environ.get("SHELL"),  # nosec: B604  # ScanContext parameter, not subprocess
     )
-    console.print(format_header("system update"))
+    console.print(format_header("system update", detail=_header_detail()))
     console.print()
 
     loaded_cfg = loaded_cfg.model_copy(update={"disabled_checks": all_disabled})
     service = SystemDryRunService(config=loaded_cfg)
     tasks = service.build_tasks(
-        context,
-        disabled_checks=all_disabled,
-        include_checks=UPDATE_CHECK_IDS,
+        context, disabled_checks=all_disabled, include_checks=UPDATE_CHECK_IDS
     )
     report = _run_tasks_with_progress(
         service,
@@ -449,6 +486,7 @@ def _system_upgrade_impl(
         console=console,
         show_all=effective_show_all,
     )
+    check_timings = getattr(service, "last_timings", None)
 
     has_updates = any(r.severity == Severity.OUTD for r in report.results)
     has_fails = any(r.severity == Severity.FAIL for r in report.results)
@@ -461,6 +499,7 @@ def _system_upgrade_impl(
                 console,
                 print_header=False,
                 verbose=verbose,
+                check_timings=check_timings,
             )
             console.print("\n[dim]No updates reported; review the findings above.[/dim]")
         else:
@@ -476,13 +515,25 @@ def _system_upgrade_impl(
     )
     if non_pass_results:
         update_report = ScanReport(profile="system", results=non_pass_results)
-        render_terminal_report(update_report, console, print_header=False, verbose=verbose)
+        render_terminal_report(
+            update_report,
+            console,
+            print_header=False,
+            verbose=verbose,
+            check_timings=check_timings,
+        )
 
     if has_updates:
         console.print()
 
     if has_fails and not has_updates:
         raise typer.Exit(code=2)
+
+    preview = format_upgrade_preview(
+        report, extra_reboot_packages=loaded_cfg.maintenance.extra_reboot_packages
+    )
+    if preview is not None:
+        console.print(Text(preview, style=STYLE_MUTED))
 
     upgrade_service = SystemUpgradeService(config=loaded_cfg)
     code = upgrade_service.run(context, console)
@@ -525,12 +576,13 @@ def _system_dry_run_impl(
         sys.stdout.write(report.model_dump_json(indent=2) + "\n")
         raise typer.Exit(code=report.exit_code)
 
-    console.print(format_header(context.profile))
+    console.print(format_header(context.profile, detail=_header_detail()))
     console.print()
 
     loaded_cfg = loaded_cfg.model_copy(update={"disabled_checks": all_disabled})
     service = SystemDryRunService(config=loaded_cfg)
     tasks = service.build_tasks(context, disabled_checks=all_disabled)
+    started = time.monotonic()
     report = _run_tasks_with_progress(
         service,
         context,
@@ -540,6 +592,8 @@ def _system_dry_run_impl(
         console=console,
         show_all=effective_show_all,
     )
+    duration_seconds = time.monotonic() - started
+    check_timings = getattr(service, "last_timings", None)
 
     render_terminal_report(
         report,
@@ -547,6 +601,8 @@ def _system_dry_run_impl(
         print_header=False,
         verbose=verbose,
         show_all=effective_show_all,
+        duration_seconds=duration_seconds,
+        check_timings=check_timings,
     )
 
     has_updates = any(r.severity == Severity.OUTD for r in report.results)
@@ -554,9 +610,14 @@ def _system_dry_run_impl(
 
     if has_updates and _can_prompt():
         console.print()
+        preview = format_upgrade_preview(
+            report, extra_reboot_packages=loaded_cfg.maintenance.extra_reboot_packages
+        )
+        if preview is not None:
+            console.print(Text(preview, style=STYLE_MUTED))
         if _safe_confirm("Update everything now?", default=False):
             console.print()
-            console.print(format_header("system update"))
+            console.print(format_header("system update", detail=_header_detail()))
             console.print()
             upgrade_service = SystemUpgradeService(config=loaded_cfg)
             upgrade_code = upgrade_service.run(context, console)
@@ -565,6 +626,7 @@ def _system_dry_run_impl(
                 raise typer.Exit(code=upgrade_code)
             # Re-evaluate report after system update
             report = service.run(context, disabled_checks=all_disabled)
+            check_timings = getattr(service, "last_timings", None)
             has_issues = any(r.severity in {Severity.WARN, Severity.FAIL} for r in report.results)
             if has_issues:
                 console.print()
@@ -581,6 +643,7 @@ def _system_dry_run_impl(
                     console,
                     print_header=False,
                     verbose=verbose,
+                    check_timings=check_timings,
                 )
 
     if has_issues and _can_prompt():

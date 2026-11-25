@@ -9,6 +9,7 @@ from dotdoctor.cli.render import (
     _status_label,
     _status_style,
     format_summary,
+    format_upgrade_preview,
     render_terminal_report,
 )
 from dotdoctor.domain.models import CheckResult, ScanReport, Severity, normalize_check_id
@@ -31,8 +32,13 @@ def test_status_styles() -> None:
 
 
 def test_neutral_checks_do_not_count_as_passed() -> None:
-    assert format_summary({"PASS": 1, "SKIP": 1}, all_passed=True).plain == "1 passed · 1 skipped"
-    assert format_summary({"SKIP": 1}).plain == "1 skipped"
+    assert (
+        format_summary({"PASS": 1, "SKIP": 1}, all_passed=True).plain
+        == "1 passed · 1 skipped (use -v for details)"
+    )
+    assert format_summary({"SKIP": 1}).plain == "1 skipped (use -v for details)"
+    assert format_summary({"SKIP": 1}, verbose=True).plain == "1 skipped"
+    assert format_summary({"SKIP": 1}, is_final=False).plain == "0 passed · 1 skipped"
 
 
 def test_neutral_details_are_available_only_in_verbose_output() -> None:
@@ -53,6 +59,7 @@ def test_neutral_details_are_available_only_in_verbose_output() -> None:
         render_terminal_report(report, Console(file=output, width=120), verbose=verbose)
         rendered = output.getvalue()
         assert "SKIP" in rendered and "1 skipped" in rendered
+        assert ("use -v for details" in rendered) is (not verbose)
         assert "fix:" not in rendered and "WARN" not in rendered and "FAIL" not in rendered
         assert ("CVE-2025-6020" in rendered) is verbose
         assert ("check: arch-audit -c" in rendered) is verbose
@@ -496,6 +503,269 @@ def test_render_terminal_report_all_pass_when_show_all_false() -> None:
     )
 
     render_terminal_report(report, console, print_header=False, show_all=False)
-    rendered = output.getvalue().strip()
+    rendered = output.getvalue().rstrip("\n")
 
-    assert rendered == "All 2 checks passed"
+    assert rendered == "  PASS  All 2 checks passed"
+
+
+def test_render_clean_scan_with_duration_and_all_metrics() -> None:
+    output = io.StringIO()
+    console = Console(file=output, width=80, color_system=None)
+
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(
+                check_id="sys.disk",
+                severity=Severity.PASS,
+                message="/ 142.3 GiB free",
+                details={"root_free_bytes": int(142.3 * 1024**3)},
+            ),
+            CheckResult(
+                check_id="sys.cache",
+                severity=Severity.PASS,
+                message="1.2 GiB in pacman cache (clean)",
+                details={"total_bytes": int(1.2 * 1024**3)},
+            ),
+            CheckResult(
+                check_id="sys.journal",
+                severity=Severity.PASS,
+                message="412M in journal logs",
+                details={"disk_usage": "412M"},
+            ),
+        ],
+    )
+
+    render_terminal_report(
+        report,
+        console,
+        print_header=False,
+        show_all=False,
+        duration_seconds=1.42,
+    )
+    lines = output.getvalue().splitlines()
+
+    assert lines == [
+        "  PASS  All 3 checks passed in 1.4s",
+        "        / 142.3 GiB free · cache 1.2 GiB · journal 412M",
+    ]
+
+
+def test_render_clean_scan_partial_metrics_and_wrapping() -> None:
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(
+                check_id="sys.disk",
+                severity=Severity.PASS,
+                message="ok",
+                details={"root_free_bytes": int(142.3 * 1024**3)},
+            ),
+            CheckResult(
+                check_id="sys.journal",
+                severity=Severity.PASS,
+                message="ok",
+                details={"disk_usage": "412M"},
+            ),
+            CheckResult(
+                check_id="sys.cache",
+                severity=Severity.PASS,
+                message="ok",
+                details={},
+            ),
+        ],
+    )
+
+    out_wide = io.StringIO()
+    render_terminal_report(
+        report,
+        Console(file=out_wide, width=80, color_system=None),
+        print_header=False,
+        show_all=False,
+        duration_seconds=12.4,
+    )
+    assert out_wide.getvalue().splitlines() == [
+        "  PASS  All 3 checks passed in 12s",
+        "        / 142.3 GiB free · journal 412M",
+    ]
+
+    out_narrow = io.StringIO()
+    render_terminal_report(
+        report,
+        Console(file=out_narrow, width=32, no_color=True),
+        print_header=False,
+        show_all=False,
+        duration_seconds=0.8,
+    )
+    narrow_lines = out_narrow.getvalue().splitlines()
+    assert "\x1b[" not in out_narrow.getvalue()
+    assert narrow_lines[0] == "  PASS  All 3 checks passed in"
+    assert narrow_lines[1].startswith("        ")
+    for line in narrow_lines[2:]:
+        assert line.startswith("        ")
+        assert len(line) <= 32
+
+
+def test_format_summary_with_duration() -> None:
+    mixed = format_summary({"PASS": 10, "OUTD": 2, "WARN": 0, "FAIL": 0}, duration_seconds=2.34)
+    assert mixed.plain == "10 passed · 2 outdated in 2.3s"
+    spans = {mixed.plain[s.start : s.end]: s.style for s in mixed.spans}
+    assert spans.get(" in 2.3s") == "dim"
+
+    long_dur = format_summary({"PASS": 4, "OUTD": 0, "WARN": 0, "FAIL": 0}, duration_seconds=14.6)
+    assert long_dur.plain == "All 4 checks passed in 15s"
+    long_spans = {long_dur.plain[s.start : s.end]: s.style for s in long_dur.spans}
+    assert long_spans.get(" in 15s") == "dim"
+
+
+def test_format_upgrade_preview_variants() -> None:
+    clean_report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(check_id="sys.packages", severity=Severity.PASS, message="up to date")
+        ],
+    )
+    assert format_upgrade_preview(clean_report) is None
+
+    official_only = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(
+                check_id="sys.packages",
+                severity=Severity.OUTD,
+                message="1 update available",
+                details={"updates": 1, "packages": ["vim 9.1.0 -> 9.1.1"]},
+            )
+        ],
+    )
+    assert format_upgrade_preview(official_only) == "1 update ready (1 official)"
+
+    mixed_with_critical = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(
+                check_id="sys.packages",
+                severity=Severity.OUTD,
+                message="12 updates available",
+                details={
+                    "updates": 12,
+                    "packages": [
+                        "mesa 24.0 -> 24.1",
+                        "linux 6.10 -> 6.11",
+                        "vim 9.1 -> 9.2",
+                    ],
+                },
+            ),
+            CheckResult(
+                check_id="sys.aur",
+                severity=Severity.OUTD,
+                message="2 AUR updates available",
+                details={
+                    "updates": 0,
+                    "packages": ["custom-dkms 1.0 -> 1.1", "helper-bin 2.0 -> 2.1"],
+                },
+            ),
+            CheckResult(
+                check_id="sys.flatpak",
+                severity=Severity.OUTD,
+                message="1 update available",
+                details={"updates": 1},
+            ),
+            CheckResult(
+                check_id="sys.firmware",
+                severity=Severity.OUTD,
+                message="1 update available",
+                details={"updates": 1},
+            ),
+            CheckResult(
+                check_id="sys.shell-omz",
+                severity=Severity.OUTD,
+                message="1 update available",
+                details={"updates": 1},
+            ),
+        ],
+    )
+    assert (
+        format_upgrade_preview(mixed_with_critical)
+        == "17 updates ready (12 official, 2 AUR, 1 Flatpak, 1 firmware, 1 Oh-My-Zsh)"
+        " · reboot likely (custom-dkms, linux, mesa)"
+    )
+
+    many_critical = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(
+                check_id="sys.packages",
+                severity=Severity.OUTD,
+                message="5 updates available",
+                details={
+                    "updates": 5,
+                    "packages": [
+                        "glibc 2.39 -> 2.40",
+                        "linux 6.10 -> 6.11",
+                        "mesa 24.0 -> 24.1",
+                        "systemd 256 -> 257",
+                        "my-custom-pkg 1.0 -> 1.1",
+                    ],
+                },
+            )
+        ],
+    )
+    assert (
+        format_upgrade_preview(many_critical, extra_reboot_packages=["my-custom-pkg"])
+        == "5 updates ready (5 official) · reboot likely (glibc, linux, mesa, +2 more)"
+    )
+
+
+def test_render_terminal_report_check_timings_only_in_verbose() -> None:
+    report = ScanReport(
+        profile="system",
+        results=[
+            CheckResult(check_id="sys.packages", severity=Severity.PASS, message="up to date"),
+            CheckResult(
+                check_id="sys.orphans",
+                severity=Severity.WARN,
+                message="1 orphan package found",
+                remediation="sudo pacman -Rns pkg1",
+            ),
+        ],
+    )
+    timings = {"sys.packages": 0.245, "sys.orphans": 1.38}
+
+    out_normal = io.StringIO()
+    render_terminal_report(
+        report,
+        Console(file=out_normal, width=80, color_system=None),
+        print_header=False,
+        verbose=False,
+        show_all=True,
+        check_timings=timings,
+    )
+    assert "(245ms)" not in out_normal.getvalue()
+    assert "(1.4s)" not in out_normal.getvalue()
+
+    out_verbose = io.StringIO()
+    render_terminal_report(
+        report,
+        Console(file=out_verbose, width=80, color_system=None),
+        print_header=False,
+        verbose=True,
+        show_all=True,
+        check_timings=timings,
+    )
+    lines = out_verbose.getvalue().splitlines()
+    assert "  PASS  sys.packages  up to date (245ms)" in lines
+    assert "  WARN  sys.orphans   1 orphan package found (1.4s)" in lines
+
+    out_narrow = io.StringIO()
+    render_terminal_report(
+        report,
+        Console(file=out_narrow, width=42, color_system=None),
+        print_header=False,
+        verbose=True,
+        show_all=True,
+        check_timings=timings,
+    )
+    for line in out_narrow.getvalue().splitlines():
+        assert len(line) <= 42
+    assert "(1.4s)" in out_narrow.getvalue()

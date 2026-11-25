@@ -1,11 +1,25 @@
+import os
 import signal
 import sys
 from typing import Any
 
 
+def _restore_terminal() -> None:
+    if (
+        sys.stderr.isatty()
+        and not any(
+            os.environ.get(flag) for flag in ("NO_COLOR", "NO_ANIMATION", "DOTDOCTOR_NO_ANIMATION")
+        )
+        and os.environ.get("TERM") != "dumb"
+    ):
+        sys.stderr.write("\x1b]9;4;0\x07")
+    sys.stderr.write("\033[?25h\n")
+    sys.stderr.flush()
+
+
 def _handle_sigterm(signum: int, frame: Any) -> None:
     # Restore cursor if hidden by terminal spinner and exit cleanly
-    sys.stderr.write("\033[?25h\n")
+    _restore_terminal()
     sys.exit(143)
 
 
@@ -23,7 +37,7 @@ def run() -> None:
         app()
     except KeyboardInterrupt:
         # Restore cursor if hidden by terminal spinner and exit cleanly
-        sys.stderr.write("\033[?25h\n")
+        _restore_terminal()
         sys.exit(130)
 
 

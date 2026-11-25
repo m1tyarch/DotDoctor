@@ -1069,7 +1069,9 @@ def test_check_journal_disk_usage(monkeypatch, tmp_path: Path) -> None:
     )
     res = service._check_journal(_context(tmp_path))
     assert res.severity is Severity.PASS
-    assert "500M in journal logs" in res.message
+    assert "500.0 MiB in journal logs" in res.message
+    assert res.details["disk_usage"] == "500.0 MiB"
+    assert res.details["disk_usage_bytes"] == 500 * 1024**2
 
     # High usage > 4G
     monkeypatch.setattr(
@@ -1081,7 +1083,8 @@ def test_check_journal_disk_usage(monkeypatch, tmp_path: Path) -> None:
     )
     res_high = service._check_journal(_context(tmp_path))
     assert res_high.severity is Severity.WARN
-    assert "6.2G in journal logs" in res_high.message
+    assert "6.2 GiB in journal logs" in res_high.message
+    assert res_high.details["disk_usage"] == "6.2 GiB"
     assert "journalctl --vacuum-size" in (res_high.remediation or "")
 
 
@@ -1744,3 +1747,60 @@ def test_upgrade_skips_aur_helper_when_root(
 
     assert any("Running as root; skipping yay" in output.getvalue() for _ in [1])
     assert executed_commands[0] == ["pacman", "-Syu", "--noconfirm"]
+
+
+def test_upgrade_records_last_sysup_and_ignores_write_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from dotdoctor.infrastructure.maintenance import MaintenanceState
+
+    service = SystemUpgradeService(
+        is_online_fn=lambda: True,
+        aur_helper_fn=lambda: None,
+        snapshot_tool_fn=lambda: None,
+    )
+    console = Console(file=io.StringIO())
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.detect_disk_space_status",
+        lambda: DiskSpaceStatus(10**10, 10**9, Severity.PASS, "ok", None),
+    )
+    monkeypatch.setattr(service, "_maintenance_preflight", lambda *args: True)
+    monkeypatch.setattr(service, "_prepare_keyring", lambda *args: True)
+    monkeypatch.setattr(service, "_refresh_mirrors", lambda *args: (False, "skip"))
+    monkeypatch.setattr(service, "_run_step", lambda *args: (False, False, False))
+    monkeypatch.setattr("dotdoctor.application.system_update.shutil.which", lambda name: None)
+
+    assert service.run(_context(tmp_path), console) == 0
+    assert MaintenanceState().read_last_sysup() is not None
+
+    def failing_record(self, timestamp=None):
+        raise OSError("read-only state dir")
+
+    monkeypatch.setattr(MaintenanceState, "record_sysup", failing_record)
+    assert service.run(_context(tmp_path), console) == 0
+
+
+def test_dry_run_records_per_task_timings(tmp_path: Path) -> None:
+    from dotdoctor.application.system_update import CheckResult, SystemCheckTask
+
+    service = SystemDryRunService()
+    tasks = [
+        SystemCheckTask(
+            check_id="sys.disk",
+            label="Disk",
+            runner=lambda: CheckResult(check_id="sys.disk", severity=Severity.PASS, message="ok"),
+        ),
+        SystemCheckTask(
+            check_id="sys.cache",
+            label="Cache",
+            runner=lambda: CheckResult(check_id="sys.cache", severity=Severity.PASS, message="ok"),
+        ),
+    ]
+    report = service.run_with_progress(_context(tmp_path), tasks=tasks)
+    assert len(report.results) == 2
+    assert set(service.last_timings.keys()) == {"sys.disk", "sys.cache"}
+    assert all(val >= 0 for val in service.last_timings.values())
+
+    service.run_with_progress(_context(tmp_path), tasks=[])
+    assert service.last_timings == {}

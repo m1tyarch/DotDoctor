@@ -23,6 +23,7 @@ def isolate_legacy_system_tests(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     if request.path.name not in {"test_system_update.py", "test_cli.py"}:
         return
     monkeypatch.setattr(MaintenanceChecks, "registrations", lambda self, context: [])

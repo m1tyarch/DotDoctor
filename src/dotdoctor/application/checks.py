@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
@@ -251,6 +252,7 @@ class SystemDryRunService:
         self._is_online_fn = is_online_fn or is_online
         self._aur_helper_fn = aur_helper_fn or detect_aur_helper
         self.config = config or DotDoctorConfig()
+        self.last_timings: dict[str, float] = {}
 
     def clear_cache(self) -> None:
         pass
@@ -580,16 +582,24 @@ class SystemDryRunService:
         disabled_checks: set[str] | list[str] | None = None,
         include_checks: set[str] | list[str] | frozenset[str] | None = None,
     ) -> list[CheckResult]:
+        self.last_timings = {}
         if not tasks:
             return []
 
         ordered_results: dict[str, CheckResult | None] = {}
+        timings_lock = threading.Lock()
         session = AuditSession()
         pool = ThreadPoolExecutor(max_workers=len(tasks), thread_name_prefix="dotdoctor-audit")
 
         def execute(task: SystemCheckTask) -> CheckResult | None:
+            started = time.monotonic()
             with session.bind():
-                return task.runner()
+                try:
+                    return task.runner()
+                finally:
+                    elapsed = time.monotonic() - started
+                    with timings_lock:
+                        self.last_timings[task.check_id] = elapsed
 
         interrupted = False
         try:
@@ -1342,14 +1352,20 @@ class SystemDryRunService:
                         "sys.journal", "unsupported journal size format", "journalctl --disk-usage"
                     )
                 size_bytes = float(value[1]) * 1024 ** (" KMGT".index(value[2]) if value[2] else 0)
+                size_bytes_int = round(size_bytes)
+                format_bytes_fn = getattr(su, "_format_bytes", _format_bytes)
+                formatted_size = format_bytes_fn(size_bytes_int)
                 is_large = size_bytes >= 4 * 1024**3
 
                 return CheckResult(
                     check_id="sys.journal",
                     severity=Severity.WARN if is_large else Severity.PASS,
-                    message=f"{size_str} in journal logs",
+                    message=f"{formatted_size} in journal logs",
                     remediation="sudo journalctl --vacuum-size=1G" if is_large else None,
-                    details={"disk_usage": size_str},
+                    details={
+                        "disk_usage": formatted_size,
+                        "disk_usage_bytes": size_bytes_int,
+                    },
                 )
 
         return _unverified(

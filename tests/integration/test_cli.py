@@ -662,6 +662,12 @@ def test_root_all_flag_shows_passed_checks(monkeypatch) -> None:
 
 
 def test_root_all_clean_scan_shows_summary_only(monkeypatch) -> None:
+    import time
+
+    from dotdoctor.infrastructure.maintenance import MaintenanceState
+
+    MaintenanceState().record_sysup(time.time() - 3 * 86400)
+
     def fake_run(self, context, on_task_complete=None, **kwargs):
         return ScanReport(
             profile="system",
@@ -675,6 +681,13 @@ def test_root_all_clean_scan_shows_summary_only(monkeypatch) -> None:
                     check_id="sys.disk",
                     severity=Severity.PASS,
                     message="360 GiB free",
+                    details={"root_free_bytes": 360 * 1024**3},
+                ),
+                CheckResult(
+                    check_id="sys.journal",
+                    severity=Severity.PASS,
+                    message="412M in journal logs",
+                    details={"disk_usage": "412M"},
                 ),
             ],
         )
@@ -686,6 +699,69 @@ def test_root_all_clean_scan_shows_summary_only(monkeypatch) -> None:
 
     result = runner.invoke(app, [])
     assert result.exit_code == 0
+    assert "DotDoctor · system · last update 3d ago" in result.stdout
     assert "sys.packages" not in result.stdout
     assert "sys.disk" not in result.stdout
-    assert "All 2 checks passed" in result.stdout
+    assert "PASS  All 3 checks passed in " in result.stdout
+    assert "/ 360.0 GiB free · journal 412M" in result.stdout
+
+
+def test_root_shows_upgrade_preview_and_unified_headers(monkeypatch) -> None:
+    import time
+
+    from dotdoctor.infrastructure.maintenance import MaintenanceState
+
+    MaintenanceState().record_sysup(time.time() - 2 * 3600)
+
+    def fake_run(self, context, on_task_complete=None, **kwargs):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(
+                    check_id="sys.packages",
+                    severity=Severity.OUTD,
+                    message="2 updates available",
+                    details={
+                        "updates": 2,
+                        "packages": ["linux 6.10 -> 6.11", "vim 9.1 -> 9.2"],
+                    },
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run,
+    )
+
+    result = runner.invoke(app, [], input="n\n")
+    assert result.exit_code == 1
+    assert "DotDoctor · system · last update 2h ago" in result.stdout
+    assert "2 updates ready (2 official) · reboot likely (linux)" in result.stdout
+
+    fix_res = runner.invoke(app, ["--fix"])
+    assert fix_res.exit_code == 0
+    assert "DotDoctor · fix · last update 2h ago" in fix_res.stdout
+
+
+def test_main_restore_terminal_osc_reset(monkeypatch) -> None:
+    import io
+
+    from dotdoctor import main
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("NO_ANIMATION", raising=False)
+    monkeypatch.delenv("DOTDOCTOR_NO_ANIMATION", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    fake_err = io.StringIO()
+    fake_err.isatty = lambda: True  # type: ignore[method-assign]
+    monkeypatch.setattr("sys.stderr", fake_err)
+    main._restore_terminal()
+    assert fake_err.getvalue() == "\x1b]9;4;0\x07\033[?25h\n"
+
+    fake_nontty = io.StringIO()
+    fake_nontty.isatty = lambda: False  # type: ignore[method-assign]
+    monkeypatch.setattr("sys.stderr", fake_nontty)
+    main._restore_terminal()
+    assert fake_nontty.getvalue() == "\033[?25h\n"

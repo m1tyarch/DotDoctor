@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Any
 from xml.etree.ElementTree import ParseError  # nosec: B405
 
+from dotdoctor.application.disk import _format_bytes
 from dotdoctor.domain.config import DotDoctorConfig, TimerConfig
 from dotdoctor.domain.context import ScanContext
 from dotdoctor.domain.models import CheckResult, Severity
@@ -791,12 +792,9 @@ class MaintenanceChecks:
                 issues.append(f"{target}: read-only filesystem")
             if available < minimum:
                 critical = True
-                free_mb = available // (1024**2)
-                min_mb = minimum // (1024**2)
-                avail_text = f"{available // 1024} KB" if free_mb == 0 else f"{free_mb} MB"
                 issues.append(
                     f"{target}: critically low available space "
-                    f"({avail_text} free, minimum {min_mb} MB)"
+                    f"({_format_bytes(available)} free, minimum {_format_bytes(minimum)})"
                 )
             if values.f_files and values.f_favail / values.f_files < 0.01:
                 issues.append(f"{target}: fewer than 1% free inodes")

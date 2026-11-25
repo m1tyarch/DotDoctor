@@ -81,6 +81,7 @@ def test_sysup_aborts_on_snapshot_failure(test_context: ScanContext) -> None:
     with (
         patch("os.geteuid", return_value=0),
         patch("dotdoctor.application.system_update.detect_disk_space_status") as mock_disk,
+        patch("dotdoctor.application.system_update.MaintenanceChecks.run", return_value=[]),
     ):
         mock_disk.return_value = DiskSpaceStatus(
             root_free_bytes=10000000000,
