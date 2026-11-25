@@ -1,27 +1,8 @@
-<div align="center">
+# DotDoctor
 
-<h1>DotDoctor</h1>
-<p>Keep your Arch system in check.</p>
-<p><sub>Arch Linux / CachyOS &nbsp;·&nbsp; Python 3.11+ &nbsp;·&nbsp; MIT</sub></p>
+CLI tool for Arch Linux and CachyOS diagnostics, system upgrades, and maintenance.
 
-<p>
-  <a href="#install">Install</a> &nbsp;·&nbsp;
-  <a href="#use">Use</a> &nbsp;·&nbsp;
-  <a href="#configure">Configure</a> &nbsp;·&nbsp;
-  <a href="docs/reference.md">Reference</a>
-</p>
-
-</div>
-
-Get a clear view of what needs attention before making any changes.
-DotDoctor provides parallel diagnostic audits, guarded updates, and interactive hygiene for Arch Linux systems in a lightweight CLI.
-
-DotDoctor defines up to **26 modular system checks** across five categories (executed concurrently depending on installed tools):
-* **Updates:** Official packages (`pacman` / `checkupdates`), AUR (`paru` / `yay`), Flatpaks, firmware (`fwupd`), and Oh-My-Zsh (`~/.oh-my-zsh` or `$ZSH`).
-* **Integrity & Security:** Package database consistency (`pacman -Dk`), package signing keys (`archlinux-keyring`), missing installed package files (`pacman -Qk`), unread Arch news notices, known vulnerabilities (`arch-audit`), and foreign library ABI rebuilds (`rebuild-detector`).
-* **System Hygiene:** Orphan packages, package cache size (`paccache`), unused Flatpak runtimes, `.pacnew` files, and `systemd-journald` disk usage.
-* **Hardware & Storage:** Storage device health (S.M.A.R.T. via `smartctl`), SSD discard/TRIM timers, Btrfs filesystem errors and scrubs, root/boot disk space (`sys.disk`), and filesystem mount capacities (`sys.mounts`).
-* **Services & Runtime State:** Failed systemd units, scheduled maintenance timers, pending reboot detection (kernel/driver mismatch, critical packages, deleted libraries), network connectivity (`sys.network`), and backup freshness.
+Arch Linux / CachyOS · Python 3.11+ · MIT · [Reference](docs/reference.md) · [Releases](https://github.com/m1tyarch/DotDoctor/releases)
 
 https://github.com/user-attachments/assets/8a176002-5070-47a3-a2e8-a789da28a998
 
@@ -29,13 +10,11 @@ https://github.com/user-attachments/assets/8a176002-5070-47a3-a2e8-a789da28a998
 
 ## Install
 
-Requires an **Arch-based Linux distribution** (such as Arch Linux or CachyOS) with `pacman`, `systemd`, and **Python 3.11 or newer**.
+Requires an Arch-based Linux distribution with `pacman`, `systemd`, and Python 3.11+.
 
-Check the [Releases](https://github.com/m1tyarch/DotDoctor/releases) page for release notes and tagged versions.
+### Arch package (recommended)
 
-### Option A: Native Arch Linux Package (Recommended)
-
-Builds the latest package directly from the repository's `main` branch and registers it with `pacman` (see [Arch packaging](packaging/aur/README.md)):
+Installs `/usr/bin/dotdoctor`, Bash/Zsh/Fish completions, and tracks dependencies via `pacman` (see [packaging/aur/README.md](packaging/aur/README.md)):
 
 ```bash
 git clone https://github.com/m1tyarch/DotDoctor.git
@@ -43,114 +22,74 @@ cd DotDoctor/packaging/aur/dotdoctor-git
 makepkg -si
 ```
 
-This installs `dotdoctor` to `/usr/bin/dotdoctor`, installs shell completions for Bash, Zsh, and Fish, and tracks dependencies natively via `pacman`.
-
-### Option B: Isolated Installation via pipx or virtualenv
-
-Because Arch Linux marks the system Python environment as externally managed (PEP 668), standalone Python CLIs should be installed into an isolated environment.
-
-Using [pipx](https://github.com/pypa/pipx):
+### Isolated install (`pipx`)
 
 ```bash
 pipx install git+https://github.com/m1tyarch/DotDoctor.git
 ```
 
-Or using a standard virtual environment:
+## Usage
+
+| Command | Behavior | Privileges |
+| --- | --- | --- |
+| `dotdoctor` | Parallel read-only scan across enabled checks. On TTY, prompts to run upgrades or fixes when findings exist (`[y/N]`). | Regular user |
+| `dotdoctor --sysup` (`-u`) | Pre-flight checks → snapshot (`snapper`/`timeshift`) → mirrors → keyring → `paru`/`yay`/`pacman -Syu` → Flatpak → `paccache` → Oh-My-Zsh → `fwupd` → `.pacnew` and post-flight checks. | `sudo` (cached up front) |
+| `dotdoctor --fix` (`-f`) | Interactive remediation (`[y/N]`) for cache, orphans, unused Flatpaks, `.pacnew`, journal, failed units, TRIM, Btrfs scrub, timers, backups, and missing package files. | `sudo` per action |
+
+Flags:
+
+* `-a`, `--all` — include `PASS` checks in output.
+* `-v`, `--verbose` — print detailed findings, package version lists, and per-check timings.
+* `-d`, `--disable-check <id>` — skip a check for this run (repeatable, e.g. `-d sys.firmware`).
+* `-c`, `--config <path>` — use a specific YAML config file.
+* `--json` / `--json-output <path>` — emit structured JSON to stdout or a file.
+* `-V`, `--version` — print version and exit.
+
+## Checks
+
+Runs up to **26 modular checks** concurrently based on installed tools and configuration:
+
+| Category | Coverage | Tools |
+| --- | --- | --- |
+| **Updates** | Official packages, AUR, Flatpak, firmware, Oh-My-Zsh | `checkupdates`, `paru`/`yay`, `flatpak`, `fwupdmgr`, `git` |
+| **Integrity & Security** | Local DB consistency, signing keyrings, missing package files, unread Arch news, CVEs, foreign library ABI rebuilds | `pacman -Dk`/`-Qkq`, `arch-audit`, `checkrebuild` |
+| **Hygiene** | Orphan packages, pacman cache, unused Flatpak runtimes, `.pacnew`/`.pacsave` files, journal disk usage | `pacman`, `paccache`, `flatpak`, `pacdiff`, `journalctl` |
+| **Hardware & Storage** | Disk space (`/` and `/boot`), mount capacity/inodes/read-only state, S.M.A.R.T. (cached `sudo` only), TRIM, Btrfs errors & scrub age | `findmnt`, `lsblk`, `smartctl`, `btrfs` |
+| **Services & Runtime** | Failed system/user units, maintenance timers, reboot detection (kernel mismatch, `pacman.log`, deleted libraries in `/proc/*/maps`), backup freshness | `systemctl`, `journalctl` |
+
+`sys.backup` is opt-in and omitted unless configured. `sys.network` is reported only when HTTPS connectivity checks fail.
+
+## Automation
 
 ```bash
-git clone https://github.com/m1tyarch/DotDoctor.git
-cd DotDoctor
-python -m venv .venv
-.venv/bin/pip install .
-.venv/bin/dotdoctor
+dotdoctor --json                     # structured report to stdout
+dotdoctor --json-output report.json  # save report to file
 ```
 
-For subsequent runs, execute `.venv/bin/dotdoctor` or activate the environment (`source .venv/bin/activate`). For development and testing with editable installs (`pip install -e .`), see [Contributing](CONTRIBUTING.md).
+JSON fields: `schema_version` (`"1.0"`), `dotdoctor_version`, `profile`, `summary` (`PASS`, `OUTD`, `WARN`, `FAIL`, `SKIP`), `exit_code`, and `results`.
 
-## Use
+### Exit codes
 
-Start with `dotdoctor` whenever you want to see what needs attention.
-Choose an explicit mode when you already know the next step:
+| Code | Meaning |
+| --- | --- |
+| `0` | Clean scan (`PASS`/`SKIP` only), or `--sysup` completed without errors. |
+| `1` | One or more `WARN` or `OUTD` findings, or pre-flight network/disk check failed in `--sysup`. |
+| `2` | One or more `FAIL` findings, or snapshot/preflight/package transaction failed in `--sysup`. |
+| `3` | Configuration error or `sudo` authentication failure/timeout. |
 
-| Mode | Action | Privileges |
-| :--- | :--- | :--- |
-| `dotdoctor` | Parallel diagnostic scan across all checks; offers updates or fixes if findings are detected. | Regular user (read-only) |
-| `dotdoctor --sysup` | Guarded system upgrade: pre-update snapshot, mirror refresh, `pacman -Syu`, AUR, Flatpaks. | Root / `sudo` (prompts up front) |
-| `dotdoctor --fix` | Interactive maintenance: clean pacman cache, remove orphans, clean Flatpaks, reset failed units. | Regular user (`sudo` per action) |
+## Configuration
 
-> [!NOTE]
-> **Prompt defaults:** For system safety, interactive prompts (such as `"Update everything now? [y/N]"` and package removal actions) default to **No** (`[y/N]`). Pressing **Enter** without typing `y` safely cancels or keeps the execution diagnostic-only. Type `y` and press **Enter** to proceed with the action.
-
-### Common Options
-
-* `-a`, `--all`: Display all checks, including passed (`PASS`) ones.
-* `-v`, `--verbose`: Show detailed findings, command outputs, and package version upgrade lists.
-* `-d`, `--disable-check <id>`: Exclude specific check IDs for this run (can be repeated, e.g. `-d sys.firmware`).
-* `-c`, `--config <path>`: Load a custom YAML configuration file.
-* `-V`, `--version`: Print DotDoctor version and exit (or run `dotdoctor version`).
-* `-h`, `--help`: Show full command-line help and usage examples.
-
-During an audit, **Ctrl+C** cleanly stops running background diagnostic processes and restores terminal state.
-
-### Upgrade Workflow (`--sysup`)
-
-When running `dotdoctor --sysup`:
-1. **Pre-flight verification:** Caches `sudo` credentials, checks HTTPS connectivity, and verifies disk space on `/` and `/boot`. If network or disk checks fail, updates abort before changes occur.
-2. **Pre-update snapshot:** Detects `snapper` or `timeshift`. If configured, a snapshot is created. If snapshot creation fails, the update halts immediately (code 2). If no snapshot tool is found, this step is marked `SKIP` and updates proceed.
-3. **Sequential transactions:** Refreshes mirrors (`cachyos-rate-mirrors` or `reflector`), verifies keyring packages, runs `pacman -Syu`, updates AUR packages (`paru` or `yay`), updates Flatpaks, cleans package caches (`paccache`), and checks firmware updates (`fwupd`).
-4. **Failure handling:** If a transaction fails, subsequent mutations abort, failure counts are reported, and rollback instructions are displayed (`sudo snapper rollback` or `sudo timeshift --restore`).
-5. **Post-flight checks and `.pacnew`:** Scans `/etc` for new `.pacnew` files and prints review reminders (`pacdiff`). Verifies systemd unit statuses and checks whether a kernel update requires a reboot.
-
-### Machine-Readable Output (JSON)
-
-DotDoctor provides machine-readable output for automation, monitoring, and scripting:
-
-```bash
-dotdoctor --json                     # Output structured JSON report directly to stdout
-dotdoctor --json-output report.json  # Save structured JSON report to a file
-```
-
-The JSON document contains top-level fields `schema_version` (`"1.0"`), `dotdoctor_version`, `profile` (`"system"`), `exit_code`, an execution `summary` (`{"PASS": ..., "OUTD": ..., "WARN": ..., "FAIL": ..., "SKIP": ...}`), and an array of individual `results` (`check_id`, `severity`, `message`, `remediation`, `details`).
-
-### Exit Codes
-
-DotDoctor uses standard exit codes suitable for CI/CD and shell scripting:
-
-| Code | Meaning | Typical Causes |
-| :---: | :--- | :--- |
-| `0` | Success / Clean | All checks passed (`PASS` / `SKIP`); or update completed with zero errors. |
-| `1` | Warnings or Outdated | One or more checks returned `WARN` or `OUTD`; or pre-flight network/disk check failed. |
-| `2` | Critical Issue / Failure | One or more checks returned `FAIL`; or pre-update snapshot or package transaction failed. |
-| `3` | Configuration or Auth Error | Configuration file not found / invalid syntax; or `sudo` authentication timed out. |
-
-## Configure
-
-DotDoctor discovers available system tools automatically and works out of the box with built-in defaults.
-
-To customize check intervals, set disk thresholds, or configure backups, copy [dotdoctor.example.yml](dotdoctor.example.yml) to your configuration path:
+Works out of the box with built-in defaults. To customize thresholds, disabled checks, timers, or backup monitoring:
 
 ```bash
 mkdir -p ~/.config/dotdoctor
 cp dotdoctor.example.yml ~/.config/dotdoctor/config.yml
 ```
 
-### Configuration Search Precedence
+Search order: `-c`/`--config` → `DOTDOCTOR_CONFIG` → `$XDG_CONFIG_HOME/dotdoctor/config.yml` (or `.yaml`) → `/etc/dotdoctor/config.yml` (or `.yaml`) → built-in defaults.
 
-DotDoctor looks for configuration in the following order:
-1. Explicit CLI argument: `--config <path>` or `-c <path>`.
-2. Environment variable: `DOTDOCTOR_CONFIG=/path/to/config.yml`.
-3. User XDG configuration: `~/.config/dotdoctor/config.yml` (or `config.yaml`).
-4. System-wide configuration: `/etc/dotdoctor/config.yml` (or `config.yaml`).
-5. Built-in defaults (used if no configuration file is found).
+## Documentation
 
-### Notable Configuration Settings
-
-* **Backups:** Backup monitoring is opt-in (`sys.backup`): without a configured adapter command, `sys.backup` is omitted. Backups are not created automatically; snapshots do not replace external backups.
-* **Optional Tools:** Utilities like `arch-audit`, `smartctl`, `btrfs-progs`, or `snapper` expand check coverage when installed.
-* **Check Statuses:** `WARN` and `FAIL` indicate actionable issues. An active systemd timer without previous run history displays a neutral `SKIP` (details visible via `-v` or `--json`) and is tracked separately from passed checks.
-
-See [Configuration reference](docs/reference.md#configuration) for complete schema documentation and backup adapter examples.
-
-## Project
-
-[Reference](docs/reference.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [MIT License](LICENSE)
+* [Reference](docs/reference.md) — check IDs, JSON schema, configuration schema, and backup adapter examples.
+* [Example config](dotdoctor.example.yml) — all 26 check IDs and config keys.
+* [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [MIT License](LICENSE)
