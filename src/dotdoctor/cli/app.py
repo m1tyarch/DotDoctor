@@ -24,6 +24,7 @@ from dotdoctor.application.system_update import (
     SystemCheckTask,
     SystemDryRunService,
     SystemUpgradeService,
+    resolve_category_checks,
 )
 from dotdoctor.cli.render import (
     format_check_status,
@@ -79,6 +80,8 @@ EPILOG = """
   dotdoctor --sysup              Upgrade system packages, mirrors and firmware
   dotdoctor --fix                Review and fix system findings interactively
   dotdoctor --all                Show all checks including clean ones
+  dotdoctor --only updates       Run only checks in the updates category
+  dotdoctor --quiet              Exit silently when scan has no findings
   dotdoctor --json               Output scan results as JSON to stdout
   dotdoctor -c custom.yml        Run using custom configuration file
 """
@@ -127,6 +130,18 @@ DISABLE_CHECK_OPTION = typer.Option(
     "-d",
     help="Disable a check id for this run (can be repeated).",
 )
+ONLY_OPTION = typer.Option(
+    [],
+    "--only",
+    "-o",
+    help="Run only checks from category (updates, security, hygiene, storage, runtime).",
+)
+QUIET_OPTION = typer.Option(
+    False,
+    "--quiet",
+    "-q",
+    help="Suppress terminal output when scan passes cleanly.",
+)
 JSON_OPTION = typer.Option(
     False,
     "--json",
@@ -161,6 +176,8 @@ def root(
     verbose: bool = VERBOSE_OPTION,
     show_all: bool = ALL_OPTION,
     disable_check: list[str] = DISABLE_CHECK_OPTION,
+    only: list[str] = ONLY_OPTION,
+    quiet: bool = QUIET_OPTION,
     json: bool = JSON_OPTION,
     json_output: Path | None = JSON_OUTPUT_OPTION,
     config: Path | None = CONFIG_OPTION,
@@ -169,6 +186,15 @@ def root(
     if ctx.invoked_subcommand is None:
         if sysup and fix:
             raise typer.BadParameter("Use either --sysup or --fix, not both.")
+
+        include_checks: frozenset[str] | None = None
+        if only:
+            if sysup:
+                raise typer.BadParameter("--only cannot be combined with --sysup.")
+            try:
+                include_checks = resolve_category_checks(only)
+            except ValueError as exc:
+                raise typer.BadParameter(str(exc)) from None
 
         if sysup:
             _system_upgrade_impl(
@@ -184,6 +210,7 @@ def root(
                 verbose=verbose,
                 show_all=show_all,
                 disable_check=disable_check,
+                include_checks=include_checks,
                 json_output=json_output,
                 config_path=config,
             )
@@ -192,9 +219,11 @@ def root(
         _system_dry_run_impl(
             verbose=verbose,
             show_all=show_all,
+            quiet=quiet,
             json_stdout=json,
             json_output=json_output,
             disable_check=disable_check,
+            include_checks=include_checks,
             config_path=config,
         )
 
@@ -358,6 +387,7 @@ def _system_fix_impl(
     verbose: bool = False,
     show_all: bool = False,
     disable_check: list[str] | None = None,
+    include_checks: frozenset[str] | None = None,
     json_output: Path | None = None,
     config_path: Path | None = None,
 ) -> None:
@@ -386,17 +416,20 @@ def _system_fix_impl(
 
     loaded_cfg = loaded_cfg.model_copy(update={"disabled_checks": all_disabled})
     service = SystemDryRunService(config=loaded_cfg)
+    fix_target_ids = (
+        (FIX_CHECK_IDS & include_checks) if include_checks is not None else FIX_CHECK_IDS
+    )
     tasks = service.build_tasks(
         context,
         disabled_checks=all_disabled,
-        include_checks=FIX_CHECK_IDS,
+        include_checks=fix_target_ids,
     )
     report = _run_tasks_with_progress(
         service,
         context,
         tasks,
         all_disabled,
-        include_checks=FIX_CHECK_IDS,
+        include_checks=fix_target_ids,
         console=console,
         show_all=effective_show_all,
     )
@@ -543,9 +576,11 @@ def _system_upgrade_impl(
 def _system_dry_run_impl(
     verbose: bool = False,
     show_all: bool = False,
+    quiet: bool = False,
     json_stdout: bool = False,
     json_output: Path | None = None,
     disable_check: list[str] | None = None,
+    include_checks: frozenset[str] | None = None,
     config_path: Path | None = None,
 ) -> None:
     console = Console()
@@ -571,28 +606,53 @@ def _system_dry_run_impl(
 
     if json_stdout:
         service = SystemDryRunService(config=loaded_cfg)
-        report = service.run(context, disabled_checks=all_disabled)
+        if include_checks is not None:
+            report = service.run(
+                context, disabled_checks=all_disabled, include_checks=include_checks
+            )
+        else:
+            report = service.run(context, disabled_checks=all_disabled)
         _export_json_report(report, json_output, console, silent_on_success=True)
         sys.stdout.write(report.model_dump_json(indent=2) + "\n")
         raise typer.Exit(code=report.exit_code)
 
-    console.print(format_header(context.profile, detail=_header_detail()))
-    console.print()
-
     loaded_cfg = loaded_cfg.model_copy(update={"disabled_checks": all_disabled})
     service = SystemDryRunService(config=loaded_cfg)
-    tasks = service.build_tasks(context, disabled_checks=all_disabled)
-    started = time.monotonic()
-    report = _run_tasks_with_progress(
-        service,
-        context,
-        tasks,
-        all_disabled,
-        include_checks=None,
-        console=console,
-        show_all=effective_show_all,
+    tasks = (
+        service.build_tasks(context, disabled_checks=all_disabled, include_checks=include_checks)
+        if include_checks is not None
+        else service.build_tasks(context, disabled_checks=all_disabled)
     )
-    duration_seconds = time.monotonic() - started
+
+    if quiet:
+        started = time.monotonic()
+        report = service.run_with_progress(
+            context,
+            disabled_checks=all_disabled,
+            include_checks=include_checks,
+            tasks=tasks,
+        )
+        duration_seconds = time.monotonic() - started
+        if report.exit_code == 0:
+            _export_json_report(report, json_output, console, silent_on_success=True)
+            raise typer.Exit(code=0)
+        console.print(format_header(context.profile, detail=_header_detail()))
+        console.print()
+    else:
+        console.print(format_header(context.profile, detail=_header_detail()))
+        console.print()
+        started = time.monotonic()
+        report = _run_tasks_with_progress(
+            service,
+            context,
+            tasks,
+            all_disabled,
+            include_checks=include_checks,
+            console=console,
+            show_all=effective_show_all,
+        )
+        duration_seconds = time.monotonic() - started
+
     check_timings = getattr(service, "last_timings", None)
 
     render_terminal_report(

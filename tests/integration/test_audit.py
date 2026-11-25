@@ -370,7 +370,7 @@ def test_failed_firmware_refresh_does_not_use_stale_metadata(monkeypatch, contex
     monkeypatch.setattr(s, "_run_capture", capture)
     result = s.SystemDryRunService()._check_firmware(context)
     assert result.severity == Severity.WARN
-    assert commands == [["fwupdmgr", "get-updates"]]
+    assert commands == [["fwupdmgr", "get-updates", "--json"]]
 
 
 @pytest.mark.parametrize(
@@ -574,7 +574,7 @@ def test_fresh_firmware_metadata_still_queries_updates(
     monkeypatch.setattr(s, "_run_capture", capture)
     result = s.SystemDryRunService()._check_firmware(context)
     assert result.severity == expected
-    assert commands == [["fwupdmgr", "get-updates"]]
+    assert commands == [["fwupdmgr", "get-updates", "--json"]]
     assert all("--force" not in cmd for cmd in commands)
 
 
@@ -617,7 +617,7 @@ def test_normal_empty_results_pass_together_in_parallel_audit(monkeypatch, conte
     def capture(cmd, **kwargs):
         if cmd == ["yay", "-Qua"]:
             return completed(returncode=1)
-        if cmd == ["fwupdmgr", "get-updates"]:
+        if cmd == ["fwupdmgr", "get-updates", "--json"]:
             return completed(returncode=2)
         if cmd == ["paccache", "-d"]:
             return completed("==> no candidate packages found for pruning\n")

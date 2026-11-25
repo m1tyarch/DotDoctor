@@ -1,0 +1,11 @@
+[Unit]
+Description=DotDoctor periodic read-only system audit
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/dotdoctor --quiet --json-output %S/dotdoctor/last-audit.json
+SuccessExitStatus=0 1 2
+Nice=10
+IOSchedulingClass=idle

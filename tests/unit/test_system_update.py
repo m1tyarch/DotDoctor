@@ -1804,3 +1804,55 @@ def test_dry_run_records_per_task_timings(tmp_path: Path) -> None:
 
     service.run_with_progress(_context(tmp_path), tasks=[])
     assert service.last_timings == {}
+
+
+def test_parse_fwupdmgr_json_and_fallback(monkeypatch, tmp_path: Path) -> None:
+    from dotdoctor.application.system_update import _parse_fwupdmgr_json, resolve_category_checks
+
+    assert _parse_fwupdmgr_json("not json") is None
+    assert _parse_fwupdmgr_json('{"Devices": []}') == 0
+    assert (
+        _parse_fwupdmgr_json(
+            '{"Devices": ['
+            '{"Name": "UEFI", "Version": "1.0", '
+            '"Releases": [{"Version": "1.0", "Flags": ["installed"]}]},'
+            '{"Name": "SSD", "Version": "2.0", "Releases": [{"Version": "2.1"}]}'
+            "]}"
+        )
+        == 1
+    )
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.shutil.which",
+        lambda name: "/usr/bin/fwupdmgr" if name == "fwupdmgr" else None,
+    )
+
+    def fake_capture(cmd: list[str], timeout: int = 90):
+        calls.append(cmd)
+        if "--json" in cmd:
+            return SimpleNamespace(
+                completed=SimpleNamespace(
+                    returncode=1, stdout="", stderr="Unknown option --json\n"
+                ),
+                timed_out=False,
+            )
+        return SimpleNamespace(
+            completed=SimpleNamespace(
+                returncode=0,
+                stdout="Devices with the latest available firmware version:\n  UEFI\n",
+                stderr="",
+            ),
+            timed_out=False,
+        )
+
+    monkeypatch.setattr("dotdoctor.application.system_update._run_capture", fake_capture)
+    res = SystemDryRunService()._check_firmware(_context(tmp_path))
+    assert res.severity is Severity.PASS
+    assert calls == [["fwupdmgr", "get-updates", "--json"], ["fwupdmgr", "get-updates"]]
+
+    assert "sys.packages" in resolve_category_checks(["updates"])
+    assert "sys.disk" in resolve_category_checks(["hardware"])
+    assert "sys.services" in resolve_category_checks(["services"])
+    with pytest.raises(ValueError, match="unknown check category"):
+        resolve_category_checks(["unknown-cat"])

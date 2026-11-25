@@ -63,6 +63,13 @@ Disable specific checks:
 dotdoctor --disable-check sys.firmware --disable-check sys.shell-omz
 ```
 
+Run only specific check categories (`updates`, `security`, `hygiene`, `storage`, `runtime`), or suppress clean output in scheduled jobs:
+
+```bash
+dotdoctor --only updates --only security
+dotdoctor --quiet --json-output report.json
+```
+
 ### 2. Comprehensive System Upgrade
 
 Run full sequential system upgrade flow:

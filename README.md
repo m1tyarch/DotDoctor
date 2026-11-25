@@ -40,7 +40,9 @@ Flags:
 
 * `-a`, `--all` — include `PASS` checks in output.
 * `-v`, `--verbose` — print detailed findings, package version lists, and per-check timings.
+* `-o`, `--only <category>` — run only a check category (`updates`, `security`, `hygiene`, `storage`, `runtime`; repeatable).
 * `-d`, `--disable-check <id>` — skip a check for this run (repeatable, e.g. `-d sys.firmware`).
+* `-q`, `--quiet` — suppress output when scan passes cleanly.
 * `-c`, `--config <path>` — use a specific YAML config file.
 * `--json` / `--json-output <path>` — emit structured JSON to stdout or a file.
 * `-V`, `--version` — print version and exit.
@@ -92,4 +94,5 @@ Search order: `-c`/`--config` → `DOTDOCTOR_CONFIG` → `$XDG_CONFIG_HOME/dotdo
 
 * [Reference](docs/reference.md) — check IDs, JSON schema, configuration schema, and backup adapter examples.
 * [Example config](dotdoctor.example.yml) — all 26 check IDs and config keys.
+* [Systemd timer example](packaging/systemd/README.md) — periodic quiet user-session audit.
 * [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [MIT License](LICENSE)

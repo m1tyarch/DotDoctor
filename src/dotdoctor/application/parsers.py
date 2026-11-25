@@ -1,5 +1,6 @@
 """Parsing utilities for package updates, step detection and error patterns."""
 
+import json
 import re
 
 _NETWORK_FAILURE_PATTERNS: frozenset[str] = frozenset(
@@ -98,19 +99,53 @@ def _detect_step_updates(command: list[str], stdout: str, stderr: str) -> bool:
     return False
 
 
+def _parse_fwupdmgr_json(output: str) -> int | None:
+    """Parse `fwupdmgr get-updates --json` output into update count, or None if not JSON."""
+    stripped = output.strip()
+    if not stripped or not stripped.startswith("{"):
+        return None
+    try:
+        payload = json.loads(stripped)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    devices = payload.get("Devices")
+    if not isinstance(devices, list):
+        return None
+
+    updates = 0
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        releases = device.get("Releases")
+        if not isinstance(releases, list) or not releases:
+            continue
+        current_version = device.get("Version")
+        has_pending = False
+        for rel in releases:
+            if not isinstance(rel, dict):
+                continue
+            flags = rel.get("Flags")
+            if isinstance(flags, list) and "installed" in flags:
+                continue
+            rel_version = rel.get("Version")
+            if (
+                isinstance(current_version, str)
+                and isinstance(rel_version, str)
+                and rel_version == current_version
+            ):
+                continue
+            has_pending = True
+            break
+        if has_pending:
+            updates += 1
+    return updates
+
+
 def _parse_fwupdmgr_updates(output: str) -> int:
     """Count firmware updates only when there are explicit update indicators."""
     lines = [line.rstrip() for line in output.splitlines()]
-    normalized = "\n".join(line.lower() for line in lines)
-
-    no_update_markers = (
-        "no updates available",
-        "no updatable devices",
-        "devices with the latest available firmware version",
-        "devices with no available firmware updates",
-    )
-    if any(marker in normalized for marker in no_update_markers):
-        pass
 
     version_transition_pattern = re.compile(r"\b\d[\w.-]*\s*(?:->|→)\s*\d[\w.-]*\b")
     explicit_update_pattern = re.compile(
@@ -152,6 +187,7 @@ __all__ = [
     "_NETWORK_FAILURE_PATTERNS",
     "_detect_step_updates",
     "_is_mirror_failure",
+    "_parse_fwupdmgr_json",
     "_parse_fwupdmgr_updates",
     "parse_package_update_line",
 ]

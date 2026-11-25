@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly DotDoctor system audit
+
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -19,6 +19,8 @@ from rich.text import Text
 
 from dotdoctor.application.checks import (
     ALL_CHECK_IDS,
+    CATEGORY_ALIASES,
+    CHECK_CATEGORIES,
     FIX_CHECK_IDS,
     HTTPS_TARGETS,
     UPDATE_CHECK_IDS,
@@ -33,6 +35,7 @@ from dotdoctor.application.checks import (
     detect_aur_helper,
     detect_pacnew_files,
     is_online,
+    resolve_category_checks,
 )
 from dotdoctor.application.disk import (
     DiskSpaceStatus,
@@ -51,6 +54,7 @@ from dotdoctor.application.parsers import (
     _NETWORK_FAILURE_PATTERNS,
     _detect_step_updates,
     _is_mirror_failure,
+    _parse_fwupdmgr_json,
     _parse_fwupdmgr_updates,
     parse_package_update_line,
 )
@@ -79,6 +83,8 @@ _ORIGINAL_SUBPROCESS_RUN = subprocess.run
 
 __all__ = [
     "ALL_CHECK_IDS",
+    "CATEGORY_ALIASES",
+    "CHECK_CATEGORIES",
     "CRITICAL_PACKAGE_PREFIXES",
     "CRITICAL_REBOOT_PACKAGES",
     "FIRST_COMPLETED",
@@ -118,6 +124,7 @@ __all__ = [
     "_detect_step_updates",
     "_format_bytes",
     "_is_mirror_failure",
+    "_parse_fwupdmgr_json",
     "_parse_fwupdmgr_updates",
     "_resolve_oh_my_zsh_path",
     "_result_for_count",
@@ -140,6 +147,7 @@ __all__ = [
     "os",
     "parse_package_update_line",
     "privileged",
+    "resolve_category_checks",
     "shutil",
     "subprocess",
     "time",

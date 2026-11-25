@@ -41,6 +41,86 @@ class OrphanRemovalPlan:
     packages: tuple[RemovalPackage, ...]
 
 
+@dataclass(frozen=True)
+class _FixSpec:
+    handler_name: str
+    label: str
+    static_prompt: str | None = None
+    actionable_key: str | None = None
+    targets_key: str | None = None
+    maintenance_managed: bool = False
+
+
+_FIX_SPECS: dict[str, _FixSpec] = {
+    "sys.orphans": _FixSpec("_fix_sys_orphans", "Removing orphan packages"),
+    "sys.cache": _FixSpec(
+        "_fix_sys_cache",
+        "Cleaning pacman package cache",
+        static_prompt="Pacman cache can be reclaimed. Clean cache now?",
+    ),
+    "sys.flatpak-unused": _FixSpec("_fix_sys_flatpak_unused", "Removing unused Flatpak runtimes"),
+    "sys.pacnew": _FixSpec("_fix_sys_pacnew", "Reviewing .pacnew files with pacdiff"),
+    "sys.journal": _FixSpec(
+        "_fix_sys_journal",
+        "Vacuuming systemd journal logs to 1G",
+        static_prompt="Systemd journal size is large. Vacuum journal logs to 1G now?",
+    ),
+    "sys.reboot": _FixSpec(
+        "_fix_sys_reboot",
+        "Initiating system reboot",
+        static_prompt="System reboot is required. Reboot the system now?",
+    ),
+    "sys.services": _FixSpec(
+        "_fix_sys_services",
+        "Resetting failed systemd services",
+        actionable_key="failed_units",
+        targets_key="failed_units",
+    ),
+    "sys.disk": _FixSpec(
+        "_fix_sys_disk",
+        "Cleaning package cache and journal logs",
+        static_prompt="Disk space is low. Clean package cache and journal logs now?",
+    ),
+    "sys.trim": _FixSpec(
+        "_fix_maintenance",
+        "Remediating sys.trim",
+        static_prompt="Enable weekly TRIM and run the existing fstrim service now?",
+        actionable_key="actionable",
+        maintenance_managed=True,
+    ),
+    "sys.btrfs": _FixSpec(
+        "_fix_maintenance",
+        "Remediating sys.btrfs",
+        static_prompt="Start overdue Btrfs scrubs now? This may take a long time.",
+        actionable_key="scrub_targets",
+        targets_key="scrub_targets",
+        maintenance_managed=True,
+    ),
+    "sys.timers": _FixSpec(
+        "_fix_maintenance",
+        "Remediating sys.timers",
+        static_prompt="Enable the listed expected maintenance timers?",
+        actionable_key="timers",
+        targets_key="timers",
+        maintenance_managed=True,
+    ),
+    "sys.backup": _FixSpec(
+        "_fix_maintenance",
+        "Remediating sys.backup",
+        static_prompt="Run the configured backup service now?",
+        maintenance_managed=True,
+    ),
+    "sys.integrity": _FixSpec(
+        "_fix_maintenance",
+        "Remediating sys.integrity",
+        static_prompt="Reinstall the listed official packages with a full system upgrade?",
+        actionable_key="reinstall_packages",
+        targets_key="reinstall_packages",
+        maintenance_managed=True,
+    ),
+}
+
+
 _UNIT_NAME_RE = re.compile(r"^[a-zA-Z0-9_\.\@\-\:\\]+$")
 
 
@@ -68,11 +148,11 @@ class InteractiveAutoFixer:
 
             had_issues = True
 
+            spec = _FIX_SPECS.get(result.check_id)
             fix_handler = self._resolve_fix_handler(result.check_id)
             if fix_handler is None or (
-                result.check_id.startswith("sys.")
-                and result.check_id
-                in {"sys.trim", "sys.btrfs", "sys.timers", "sys.integrity", "sys.backup"}
+                spec is not None
+                and spec.maintenance_managed
                 and not self._has_maintenance_action(result)
             ):
                 for line in format_status_line("SKIP", result.check_id, "(manual review required)"):
@@ -173,13 +253,8 @@ class InteractiveAutoFixer:
 
     def _verify(self, result: CheckResult, context: ScanContext) -> CheckResult:
         ids = frozenset({result.check_id})
-        if result.check_id in {
-            "sys.trim",
-            "sys.btrfs",
-            "sys.timers",
-            "sys.integrity",
-            "sys.backup",
-        }:
+        spec = _FIX_SPECS.get(result.check_id)
+        if spec is not None and spec.maintenance_managed:
             checks = MaintenanceChecks(self.config).run(context, ids)
         else:
             from dotdoctor.application.system_update import SystemDryRunService
@@ -200,48 +275,20 @@ class InteractiveAutoFixer:
         self,
         check_id: str,
     ) -> Callable[[ScanContext, CheckResult], FixOutcome] | None:
-        handlers: dict[str, Callable[[ScanContext, CheckResult], FixOutcome]] = {
-            "sys.orphans": self._fix_sys_orphans,
-            "sys.cache": self._fix_sys_cache,
-            "sys.flatpak-unused": self._fix_sys_flatpak_unused,
-            "sys.pacnew": self._fix_sys_pacnew,
-            "sys.journal": self._fix_sys_journal,
-            "sys.reboot": self._fix_sys_reboot,
-            "sys.services": self._fix_sys_services,
-            "sys.disk": self._fix_sys_disk,
-            "sys.trim": self._fix_maintenance,
-            "sys.btrfs": self._fix_maintenance,
-            "sys.timers": self._fix_maintenance,
-            "sys.backup": self._fix_maintenance,
-            "sys.integrity": self._fix_maintenance,
-        }
-        return handlers.get(check_id)
+        spec = _FIX_SPECS.get(check_id)
+        if spec is None:
+            return None
+        handler: Callable[[ScanContext, CheckResult], FixOutcome] = getattr(self, spec.handler_name)
+        return handler
 
     def _resolve_action_label(self, check_id: str) -> str:
-        labels: dict[str, str] = {
-            "sys.orphans": "Removing orphan packages",
-            "sys.cache": "Cleaning pacman package cache",
-            "sys.flatpak-unused": "Removing unused Flatpak runtimes",
-            "sys.pacnew": "Reviewing .pacnew files with pacdiff",
-            "sys.journal": "Vacuuming systemd journal logs to 1G",
-            "sys.reboot": "Initiating system reboot",
-            "sys.services": "Resetting failed systemd services",
-            "sys.disk": "Cleaning package cache and journal logs",
-        }
-        return labels.get(check_id, f"Remediating {check_id}")
+        spec = _FIX_SPECS.get(check_id)
+        return spec.label if spec is not None else f"Remediating {check_id}"
 
     def _build_prompt_message(self, result: CheckResult) -> str:
-        prompts = {
-            "sys.trim": "Enable weekly TRIM and run the existing fstrim service now?",
-            "sys.btrfs": "Start overdue Btrfs scrubs now? This may take a long time.",
-            "sys.timers": "Enable the listed expected maintenance timers?",
-            "sys.backup": "Run the configured backup service now?",
-            "sys.integrity": "Reinstall the listed official packages with a full system upgrade?",
-        }
-        if result.check_id in prompts:
-            return prompts[result.check_id]
-        if result.check_id == "sys.cache":
-            return "Pacman cache can be reclaimed. Clean cache now?"
+        spec = _FIX_SPECS.get(result.check_id)
+        if spec is not None and spec.static_prompt is not None:
+            return spec.static_prompt
 
         if result.check_id == "sys.flatpak-unused":
             count = result.details.get("unused_count", 0)
@@ -254,20 +301,11 @@ class InteractiveAutoFixer:
             noun = "file" if count == 1 else "files"
             return f"{count} .pacnew {noun} detected. Review and merge with pacdiff now?"
 
-        if result.check_id == "sys.journal":
-            return "Systemd journal size is large. Vacuum journal logs to 1G now?"
-
-        if result.check_id == "sys.reboot":
-            return "System reboot is required. Reboot the system now?"
-
         if result.check_id == "sys.services":
             failed = result.details.get("failed_units", [])
             count = len(failed)
             noun = "unit" if count == 1 else "units"
             return f"{count} failed systemd {noun} detected. Reset failed services now?"
-
-        if result.check_id == "sys.disk":
-            return "Disk space is low. Clean package cache and journal logs now?"
 
         return f"Issue found in {result.check_id}. Try automated remediation if available?"
 
@@ -502,46 +540,35 @@ class InteractiveAutoFixer:
         return outcome
 
     def _has_maintenance_action(self, result: CheckResult) -> bool:
-        keys = {
-            "sys.trim": "actionable",
-            "sys.btrfs": "scrub_targets",
-            "sys.timers": "timers",
-            "sys.integrity": "reinstall_packages",
-        }
         if result.check_id == "sys.backup":
             return self.config.maintenance.backup is not None
-        return bool(result.details.get(keys.get(result.check_id, "")))
+        spec = _FIX_SPECS.get(result.check_id)
+        if spec is None or spec.actionable_key is None:
+            return False
+        return bool(result.details.get(spec.actionable_key))
 
     def can_fix(self, result: CheckResult) -> bool:
         if result.severity not in {Severity.WARN, Severity.FAIL}:
             return False
-        if self._resolve_fix_handler(result.check_id) is None:
+        spec = _FIX_SPECS.get(result.check_id)
+        if spec is None:
             return False
-        if result.check_id in {
-            "sys.trim",
-            "sys.btrfs",
-            "sys.timers",
-            "sys.integrity",
-            "sys.backup",
-        }:
+        if spec.maintenance_managed:
             return self._has_maintenance_action(result)
-        if result.check_id == "sys.services":
-            return bool(result.details.get("failed_units"))
+        if spec.actionable_key is not None:
+            return bool(result.details.get(spec.actionable_key))
         return True
 
     @staticmethod
     def _action_targets(result: CheckResult) -> list[str]:
-        if result.check_id == "sys.integrity":
-            return list(result.details.get("reinstall_packages", []))
-        if result.check_id == "sys.btrfs":
-            return list(result.details.get("scrub_targets", []))
+        spec = _FIX_SPECS.get(result.check_id)
+        if spec is None or spec.targets_key is None:
+            return []
         if result.check_id == "sys.timers":
             return [
                 f"{timer['unit']} ({timer['scope']})" for timer in result.details.get("timers", [])
             ]
-        if result.check_id == "sys.services":
-            return list(result.details.get("failed_units", []))
-        return []
+        return list(result.details.get(spec.targets_key, []))
 
     def _fix_maintenance(self, context: ScanContext, result: CheckResult) -> FixOutcome:
         commands: list[list[str]] = []

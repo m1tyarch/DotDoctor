@@ -11,8 +11,9 @@ import sys
 import textwrap
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
@@ -80,6 +81,35 @@ def detect_snapshot_tool() -> str | None:
         return "timeshift"
 
     return None
+
+
+@dataclass
+class _UpgradeLedger:
+    """Tracks step counters and overall upgrade outcome across sequential stages."""
+
+    had_error: bool = False
+    any_updates: bool = False
+    done_count: int = 0
+    fail_count: int = 0
+    skip_count: int = 0
+
+    def record_status(self, status: str, *, err: bool = False) -> None:
+        self.had_error |= err
+        if status == "done":
+            self.done_count += 1
+        elif status == "fail":
+            self.fail_count += 1
+        else:
+            self.skip_count += 1
+
+    def record_step(self, err: bool, updated: bool) -> None:
+        self.had_error |= err
+        if err:
+            self.fail_count += 1
+        else:
+            self.done_count += 1
+            if updated:
+                self.any_updates = True
 
 
 class SystemUpgradeService:
@@ -187,30 +217,23 @@ class SystemUpgradeService:
                 f"[yellow]Warning: {disk_status.message} Proceeding with caution[/yellow]"
             )
 
-        emit_osc_progress(console, 5, state=1)
+        ledger = _UpgradeLedger()
+        console_width = getattr(console, "width", 80) or 80
+        total_stages = 10
+
+        emit_osc_progress(console, int(100 * 1 / total_stages), state=1)
         if not self._maintenance_preflight(context, console):
             return 2
 
-        emit_osc_progress(console, 15, state=1)
-        had_error = False
-        any_updates = False
-        done_count = 0
-        fail_count = 0
-        skip_count = 0
-        console_width = getattr(console, "width", 80) or 80
-
+        emit_osc_progress(console, int(100 * 2 / total_stages), state=1)
         snap_err, snap_status, created_snap = self._create_pre_update_snapshot(console)
-        had_error |= snap_err
-        if snap_status == "done":
-            done_count += 1
-        elif snap_status == "fail":
-            fail_count += 1
-        else:
-            skip_count += 1
+        ledger.record_status(snap_status, err=snap_err)
 
         if snap_err:
             console.print(
-                format_sysup_summary(done=done_count, failed=fail_count, skipped=skip_count)
+                format_sysup_summary(
+                    done=ledger.done_count, failed=ledger.fail_count, skipped=ledger.skip_count
+                )
             )
             for line in format_status_line(
                 STATUS_FAIL, "Update aborted: pre-update snapshot failed"
@@ -218,25 +241,105 @@ class SystemUpgradeService:
                 console.print(line)
             return 2
 
-        emit_osc_progress(console, 25, state=1)
+        emit_osc_progress(console, int(100 * 3 / total_stages), state=1)
         mirror_err, mirror_status = self._refresh_mirrors(console)
-        had_error |= mirror_err
-        if mirror_status == "done":
-            done_count += 1
-        elif mirror_status == "fail":
-            fail_count += 1
-        else:
-            skip_count += 1
+        ledger.record_status(mirror_status, err=mirror_err)
 
         # Prepare a newly available keyring before the full upgrade. Never leave a
         # synchronized database behind and proceed with unrelated package installs.
-        emit_osc_progress(console, 35, state=1)
+        emit_osc_progress(console, int(100 * 4 / total_stages), state=1)
         if not self._prepare_keyring(console):
             return 2
-        done_count += self._keyring_steps
-        any_updates |= self._keyring_updated
+        ledger.done_count += self._keyring_steps
+        ledger.any_updates |= self._keyring_updated
 
-        emit_osc_progress(console, 45, state=1)
+        emit_osc_progress(console, int(100 * 5 / total_stages), state=1)
+        pkg_exit = self._run_package_upgrade_stage(console, console_width, ledger, created_snap)
+        if pkg_exit is not None:
+            return pkg_exit
+
+        self._run_post_package_stages(context, console, console_width, ledger, total_stages)
+
+        try:
+            pacnew_fn = getattr(su, "detect_pacnew_files", detect_pacnew_files)
+            pacnew_files = pacnew_fn()
+        except OSError:
+            pacnew_files = []
+            for line in format_status_line("WARN", "configuration files could not be verified"):
+                console.print(line)
+        if pacnew_files:
+            console.print(
+                f"\n[bold yellow]Note: {len(pacnew_files)} .pacnew "
+                "configuration files found:[/bold yellow]"
+            )
+            for f in pacnew_files[:5]:
+                console.print(f"  [yellow]{escape(str(f))}[/yellow]")
+            console.print(
+                "[yellow]Run 'pacdiff' to review and merge configuration updates.[/yellow]"
+            )
+
+        emit_osc_progress(console, int(100 * 10 / total_stages), state=1)
+        maint_cls = getattr(su, "MaintenanceChecks", MaintenanceChecks)
+        postflight = maint_cls(self.config).run(context, POSTFLIGHT_IDS)
+        self._render_postflight(postflight, context, console, console_width, ledger)
+        if any(r.severity == Severity.FAIL for r in postflight):
+            ledger.had_error = True
+        console.print()
+        console.print(
+            format_sysup_summary(
+                done=ledger.done_count, failed=ledger.fail_count, skipped=ledger.skip_count
+            )
+        )
+        if any(r.severity not in {Severity.PASS, Severity.SKIP} for r in postflight):
+            console.print(
+                "[dim]Post-update checks require attention; review the findings above.[/dim]"
+            )
+        elif not ledger.had_error:
+            if not ledger.any_updates:
+                console.print(
+                    "[dim]Nothing to update. All packages and components are up to date.[/dim]"
+                )
+            else:
+                console.print("[dim]All updates completed successfully.[/dim]")
+        if ledger.had_error and created_snap:
+            if created_snap == "snapper":
+                console.print(
+                    "\n[dim]Rollback available: sudo snapper rollback "
+                    "or select snapshot in bootloader[/dim]"
+                )
+            elif created_snap == "timeshift":
+                console.print("\n[dim]Rollback available: sudo timeshift --restore[/dim]")
+
+        extra_pkgs = getattr(self.config.maintenance, "extra_reboot_packages", [])
+        reboot_fn = getattr(su, "detect_reboot_status", detect_reboot_status)
+        try:
+            reboot_status = (
+                reboot_fn(extra_critical_packages=extra_pkgs) if extra_pkgs else reboot_fn()
+            )
+        except TypeError:
+            reboot_status = reboot_fn()
+        if reboot_status.required:
+            console.print(
+                f"\n[bold yellow]System reboot recommended:[/bold yellow] "
+                f"[yellow]{reboot_status.reason}[/yellow]"
+            )
+            if self._confirm("System reboot is recommended. Reboot the system now?"):
+                self._trigger_reboot(console)
+        if not ledger.had_error:
+            state_cls = getattr(su, "MaintenanceState", MaintenanceState)
+            try:
+                state_cls().record_sysup()
+            except (OSError, ValueError) as exc:
+                logger.debug("Failed to record last sysup timestamp: %s", exc)
+        return 2 if ledger.had_error else 0
+
+    def _run_package_upgrade_stage(
+        self,
+        console: Console,
+        console_width: int,
+        ledger: _UpgradeLedger,
+        created_snap: str | None,
+    ) -> int | None:
         aur_helper = (
             getattr(su, "detect_aur_helper", self._aur_helper_fn)()
             if self._aur_helper_fn is detect_aur_helper
@@ -271,220 +374,169 @@ class SystemUpgradeService:
             update_cmd = ["sudo", "pacman", "-Syu", "--noconfirm"]
             update_title = "System update (pacman)"
 
-        if update_cmd is not None:
-            if self.reinstall_packages:
-                update_cmd += ["--", *self.reinstall_packages]
-            aur_error, is_net_failure, aur_updated = self._run_step(
-                update_cmd, console, update_title
+        if update_cmd is None:
+            self._print_skip(
+                console, "Package update", "(no supported package manager installed)", console_width
             )
-            if aur_error and re.search(
-                r"marginal trust|unknown trust|unknown public key|"
-                r"invalid or corrupted package.*signature",
-                self._last_step_output,
-                re.I,
-            ):
-                if not self._prepare_keyring(console, force=True):
-                    return 2
-                done_count += self._keyring_steps
-                any_updates |= self._keyring_updated
-                aur_error, is_net_failure, aur_updated = self._run_step(
-                    update_cmd, console, f"{update_title} (retry after keyring update)"
-                )
-            if aur_error and is_net_failure:
-                console.print(
-                    "[yellow]Mirror or network failure detected. "
-                    "Attempting mirror recovery[/yellow]"
-                )
-                mirror_failed, _ = self._refresh_mirrors(console)
-                if mirror_failed:
-                    console.print(
-                        "[red]FAIL: Mirror recovery failed. Package upgrade aborted.[/red]"
-                    )
-                    return 1
-                retry_error, _, retry_updated = self._run_step(
-                    update_cmd,
-                    console,
-                    f"{update_title} (retry after mirror recovery)",
-                )
-                if retry_error:
-                    had_error = True
-                    fail_count += 1
-                    console.print(
-                        "[red]FAIL: Package upgrade aborted — persistent network failure.[/red]"
-                    )
-                    return 1
-                done_count += 1
-                if retry_updated:
-                    any_updates = True
-            elif aur_error:
-                had_error = True
-                fail_count += 1
-                if created_snap:
-                    command = (
-                        "sudo snapper rollback or select snapshot in bootloader"
-                        if created_snap == "snapper"
-                        else "sudo timeshift --restore"
-                    )
-                    console.print(f"  [dim]Rollback available: {command}[/dim]")
-                console.print(
-                    format_sysup_summary(done=done_count, failed=fail_count, skipped=skip_count)
-                )
+            ledger.skip_count += 1
+            return None
+
+        if self.reinstall_packages:
+            update_cmd += ["--", *self.reinstall_packages]
+        aur_error, is_net_failure, aur_updated = self._run_step(update_cmd, console, update_title)
+        if aur_error and re.search(
+            r"marginal trust|unknown trust|unknown public key|"
+            r"invalid or corrupted package.*signature",
+            self._last_step_output,
+            re.I,
+        ):
+            if not self._prepare_keyring(console, force=True):
                 return 2
-            else:
-                done_count += 1
-                if aur_updated:
-                    any_updates = True
-        else:
-            for line_text in format_status_line(
-                STATUS_SKIP,
-                "Package update",
-                detail="(no supported package manager installed)",
-                width=console_width,
-            ):
-                console.print(line_text)
-            skip_count += 1
-
-        emit_osc_progress(console, 65, state=1)
-        if getattr(su, "shutil", shutil).which("flatpak") is not None:
-            flatpak_error, _, flatpak_updated = self._run_step(
-                ["flatpak", "update", "-y"], console, "Flatpak update"
+            ledger.done_count += self._keyring_steps
+            ledger.any_updates |= self._keyring_updated
+            aur_error, is_net_failure, aur_updated = self._run_step(
+                update_cmd, console, f"{update_title} (retry after keyring update)"
             )
-            had_error |= flatpak_error
-            if flatpak_error:
-                fail_count += 1
-            else:
-                done_count += 1
-                if flatpak_updated:
-                    any_updates = True
-
-            unused_error, _, unused_updated = self._run_step(
-                ["flatpak", "uninstall", "--unused", "-y"],
+        if aur_error and is_net_failure:
+            console.print(
+                "[yellow]Mirror or network failure detected. Attempting mirror recovery[/yellow]"
+            )
+            mirror_failed, _ = self._refresh_mirrors(console)
+            if mirror_failed:
+                console.print("[red]FAIL: Mirror recovery failed. Package upgrade aborted.[/red]")
+                return 1
+            retry_error, _, retry_updated = self._run_step(
+                update_cmd,
                 console,
-                "Flatpak cleanup (unused runtimes)",
+                f"{update_title} (retry after mirror recovery)",
             )
-            had_error |= unused_error
-            if unused_error:
-                fail_count += 1
-            else:
-                done_count += 1
-                if unused_updated:
-                    any_updates = True
-        else:
-            for line_text in format_status_line(
-                STATUS_SKIP,
-                "Flatpak update",
-                detail="(not installed)",
-                width=console_width,
-            ):
-                console.print(line_text)
-            skip_count += 1
-
-        emit_osc_progress(console, 75, state=1)
-        if getattr(su, "shutil", shutil).which("paccache") is not None:
-            cache_error, _, cache_updated = self._run_step(
-                ["sudo", "paccache", "-rk2"],
-                console,
-                "Pacman cache cleanup (keep 2 versions)",
-            )
-            had_error |= cache_error
-            if cache_error:
-                fail_count += 1
-            else:
-                done_count += 1
-                if cache_updated:
-                    any_updates = True
-
-            uninstalled_error, _, uninstalled_updated = self._run_step(
-                ["sudo", "paccache", "-ruk0"],
-                console,
-                "Pacman cache cleanup (uninstalled packages)",
-            )
-            had_error |= uninstalled_error
-            if uninstalled_error:
-                fail_count += 1
-            else:
-                done_count += 1
-                if uninstalled_updated:
-                    any_updates = True
-
-        emit_osc_progress(console, 83, state=1)
-        omz_upgrade = context.home / ".oh-my-zsh" / "tools" / "upgrade.sh"
-        if omz_upgrade.exists():
-            if os.geteuid() == 0:
-                for line_text in format_status_line(
-                    STATUS_SKIP,
-                    "Oh-My-Zsh update",
-                    detail="(skipped: cannot run shell script as root)",
-                    width=console_width,
-                ):
-                    console.print(line_text)
-                skip_count += 1
-            else:
-                omz_error, _, omz_updated = self._run_step(
-                    ["sh", str(omz_upgrade)],
-                    console,
-                    "Oh-My-Zsh update",
+            if retry_error:
+                ledger.had_error = True
+                ledger.fail_count += 1
+                console.print(
+                    "[red]FAIL: Package upgrade aborted — persistent network failure.[/red]"
                 )
-                had_error |= omz_error
-                if omz_error:
-                    fail_count += 1
-                else:
-                    done_count += 1
-                    if omz_updated:
-                        any_updates = True
-        else:
-            for line_text in format_status_line(
-                STATUS_SKIP,
-                "Oh-My-Zsh update",
-                detail="(not installed)",
-                width=console_width,
-            ):
-                console.print(line_text)
-            skip_count += 1
+                return 1
+            ledger.record_step(False, retry_updated)
+            return None
 
-        emit_osc_progress(console, 90, state=1)
-        if getattr(su, "shutil", shutil).which("fwupdmgr") is not None:
-            fw_error, _, fw_updated = self._run_step(
-                ["fwupdmgr", "update", "-y"], console, "Firmware update"
-            )
-            had_error |= fw_error
-            if fw_error:
-                fail_count += 1
-            else:
-                done_count += 1
-                if fw_updated:
-                    any_updates = True
-        else:
-            for line_text in format_status_line(
-                STATUS_SKIP,
-                "Firmware update",
-                detail="(not installed)",
-                width=console_width,
-            ):
-                console.print(line_text)
-            skip_count += 1
-
-        try:
-            pacnew_fn = getattr(su, "detect_pacnew_files", detect_pacnew_files)
-            pacnew_files = pacnew_fn()
-        except OSError:
-            pacnew_files = []
-            for line in format_status_line("WARN", "configuration files could not be verified"):
-                console.print(line)
-        if pacnew_files:
+        if aur_error:
+            ledger.had_error = True
+            ledger.fail_count += 1
+            if created_snap:
+                command = (
+                    "sudo snapper rollback or select snapshot in bootloader"
+                    if created_snap == "snapper"
+                    else "sudo timeshift --restore"
+                )
+                console.print(f"  [dim]Rollback available: {command}[/dim]")
             console.print(
-                f"\n[bold yellow]Note: {len(pacnew_files)} .pacnew "
-                "configuration files found:[/bold yellow]"
+                format_sysup_summary(
+                    done=ledger.done_count, failed=ledger.fail_count, skipped=ledger.skip_count
+                )
             )
-            for f in pacnew_files[:5]:
-                console.print(f"  [yellow]{escape(str(f))}[/yellow]")
-            console.print(
-                "[yellow]Run 'pacdiff' to review and merge configuration updates.[/yellow]"
-            )
+            return 2
 
-        emit_osc_progress(console, 96, state=1)
-        maint_cls = getattr(su, "MaintenanceChecks", MaintenanceChecks)
-        postflight = maint_cls(self.config).run(context, POSTFLIGHT_IDS)
+        ledger.record_step(False, aur_updated)
+        return None
+
+    @staticmethod
+    def _print_skip(console: Console, title: str, detail: str, console_width: int) -> None:
+        for line_text in format_status_line(STATUS_SKIP, title, detail=detail, width=console_width):
+            console.print(line_text)
+
+    def _run_optional_stage(
+        self,
+        console: Console,
+        console_width: int,
+        ledger: _UpgradeLedger,
+        steps: Sequence[tuple[list[str], str]],
+        skip_title: str,
+        *,
+        available: bool,
+        skip_detail: str = "(not installed)",
+        record_skip: bool = True,
+    ) -> None:
+        if not available:
+            if record_skip:
+                self._print_skip(console, skip_title, skip_detail, console_width)
+                ledger.skip_count += 1
+            return
+        for command, title in steps:
+            err, _, updated = self._run_step(command, console, title)
+            ledger.record_step(err, updated)
+
+    def _run_post_package_stages(
+        self,
+        context: ScanContext,
+        console: Console,
+        console_width: int,
+        ledger: _UpgradeLedger,
+        total_stages: int,
+    ) -> None:
+        which_fn = getattr(su, "shutil", shutil).which
+
+        emit_osc_progress(console, int(100 * 6 / total_stages), state=1)
+        self._run_optional_stage(
+            console,
+            console_width,
+            ledger,
+            (
+                (["flatpak", "update", "-y"], "Flatpak update"),
+                (["flatpak", "uninstall", "--unused", "-y"], "Flatpak cleanup (unused runtimes)"),
+            ),
+            "Flatpak update",
+            available=which_fn("flatpak") is not None,
+        )
+
+        emit_osc_progress(console, int(100 * 7 / total_stages), state=1)
+        self._run_optional_stage(
+            console,
+            console_width,
+            ledger,
+            (
+                (["sudo", "paccache", "-rk2"], "Pacman cache cleanup (keep 2 versions)"),
+                (["sudo", "paccache", "-ruk0"], "Pacman cache cleanup (uninstalled packages)"),
+            ),
+            "Pacman cache cleanup",
+            available=which_fn("paccache") is not None,
+            record_skip=False,
+        )
+
+        emit_osc_progress(console, int(100 * 8 / total_stages), state=1)
+        omz_upgrade = context.home / ".oh-my-zsh" / "tools" / "upgrade.sh"
+        omz_exists = omz_upgrade.exists()
+        omz_as_root = omz_exists and os.geteuid() == 0
+        self._run_optional_stage(
+            console,
+            console_width,
+            ledger,
+            ((["sh", str(omz_upgrade)], "Oh-My-Zsh update"),),
+            "Oh-My-Zsh update",
+            available=omz_exists and not omz_as_root,
+            skip_detail=(
+                "(skipped: cannot run shell script as root)" if omz_as_root else "(not installed)"
+            ),
+        )
+
+        emit_osc_progress(console, int(100 * 9 / total_stages), state=1)
+        self._run_optional_stage(
+            console,
+            console_width,
+            ledger,
+            ((["fwupdmgr", "update", "-y"], "Firmware update"),),
+            "Firmware update",
+            available=which_fn("fwupdmgr") is not None,
+        )
+
+    def _render_postflight(
+        self,
+        postflight: list[CheckResult],
+        context: ScanContext,
+        console: Console,
+        console_width: int,
+        ledger: _UpgradeLedger,
+    ) -> None:
         for result in postflight:
             if result.severity not in {Severity.PASS, Severity.SKIP}:
                 for line in format_status_line(
@@ -510,54 +562,8 @@ class SystemUpgradeService:
                 and result.details.get("rebuild_packages")
                 and not self._offer_rebuilds(result, context, console)
             ):
-                had_error = True
-                fail_count += 1
-        if any(r.severity == Severity.FAIL for r in postflight):
-            had_error = True
-        console.print()
-        console.print(format_sysup_summary(done=done_count, failed=fail_count, skipped=skip_count))
-        if any(r.severity not in {Severity.PASS, Severity.SKIP} for r in postflight):
-            console.print(
-                "[dim]Post-update checks require attention; review the findings above.[/dim]"
-            )
-        elif not had_error:
-            if not any_updates:
-                console.print(
-                    "[dim]Nothing to update. All packages and components are up to date.[/dim]"
-                )
-            else:
-                console.print("[dim]All updates completed successfully.[/dim]")
-        if had_error and created_snap:
-            if created_snap == "snapper":
-                console.print(
-                    "\n[dim]Rollback available: sudo snapper rollback "
-                    "or select snapshot in bootloader[/dim]"
-                )
-            elif created_snap == "timeshift":
-                console.print("\n[dim]Rollback available: sudo timeshift --restore[/dim]")
-
-        extra_pkgs = getattr(self.config.maintenance, "extra_reboot_packages", [])
-        reboot_fn = getattr(su, "detect_reboot_status", detect_reboot_status)
-        try:
-            reboot_status = (
-                reboot_fn(extra_critical_packages=extra_pkgs) if extra_pkgs else reboot_fn()
-            )
-        except TypeError:
-            reboot_status = reboot_fn()
-        if reboot_status.required:
-            console.print(
-                f"\n[bold yellow]System reboot recommended:[/bold yellow] "
-                f"[yellow]{reboot_status.reason}[/yellow]"
-            )
-            if self._confirm("System reboot is recommended. Reboot the system now?"):
-                self._trigger_reboot(console)
-        if not had_error:
-            state_cls = getattr(su, "MaintenanceState", MaintenanceState)
-            try:
-                state_cls().record_sysup()
-            except (OSError, ValueError) as exc:
-                logger.debug("Failed to record last sysup timestamp: %s", exc)
-        return 2 if had_error else 0
+                ledger.had_error = True
+                ledger.fail_count += 1
 
     @staticmethod
     @contextmanager

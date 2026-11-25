@@ -765,3 +765,55 @@ def test_main_restore_terminal_osc_reset(monkeypatch) -> None:
     monkeypatch.setattr("sys.stderr", fake_nontty)
     main._restore_terminal()
     assert fake_nontty.getvalue() == "\033[?25h\n"
+
+
+def test_cli_only_category_and_quiet_flags(monkeypatch) -> None:
+    captured_includes: list[frozenset[str] | None] = []
+
+    def fake_build(self, context, disabled_checks=None, include_checks=None):
+        captured_includes.append(frozenset(include_checks) if include_checks is not None else None)
+        return []
+
+    def fake_run_progress(self, context, **kwargs):
+        return ScanReport(
+            profile="system",
+            results=[CheckResult(check_id="sys.packages", severity=Severity.PASS, message="ok")],
+        )
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.build_tasks", fake_build
+    )
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run_progress,
+    )
+
+    res_clean_quiet = runner.invoke(app, ["--only", "updates", "--quiet"])
+    assert res_clean_quiet.exit_code == 0
+    assert res_clean_quiet.stdout == ""
+    assert captured_includes[0] is not None and "sys.packages" in captured_includes[0]
+    assert "sys.disk" not in captured_includes[0]
+
+    def fake_run_warn(self, context, **kwargs):
+        return ScanReport(
+            profile="system",
+            results=[
+                CheckResult(check_id="sys.packages", severity=Severity.OUTD, message="1 update")
+            ],
+        )
+
+    monkeypatch.setattr(
+        "dotdoctor.application.system_update.SystemDryRunService.run_with_progress",
+        fake_run_warn,
+    )
+    res_warn_quiet = runner.invoke(app, ["--only", "updates", "--quiet"], input="n\n")
+    assert res_warn_quiet.exit_code == 1
+    assert "sys.packages" in res_warn_quiet.stdout
+
+    res_bad_cat = runner.invoke(app, ["--only", "nonexistent"])
+    assert res_bad_cat.exit_code != 0
+    assert "unknown check category" in res_bad_cat.output
+
+    res_conflict = runner.invoke(app, ["--sysup", "--only", "updates"])
+    assert res_conflict.exit_code != 0
+    assert "--only cannot be combined with --sysup" in res_conflict.output
