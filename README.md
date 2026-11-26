@@ -4,7 +4,7 @@ CLI tool for Arch Linux and CachyOS diagnostics, system upgrades, and maintenanc
 
 Arch Linux / CachyOS · Python 3.11+ · MIT · [Reference](docs/reference.md) · [Releases](https://github.com/m1tyarch/DotDoctor/releases)
 
-https://github.com/user-attachments/assets/8a176002-5070-47a3-a2e8-a789da28a998
+https://github.com/user-attachments/assets/95b6e91f-29d0-471b-8d28-54b76437d8cc
 
 <sub>Illustrative report. Checks depend on your installed tools and configuration.</sub>
 
