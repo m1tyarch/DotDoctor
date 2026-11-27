@@ -5,9 +5,17 @@ from __future__ import annotations
 import os
 import re
 import shutil
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
-from dotdoctor.application.check_common import _run_capture, _su, _unverified, detect_pacnew_files
+from dotdoctor.application.check_common import (
+    _ExecResult,
+    _run_capture,
+    _su,
+    _unverified,
+    detect_pacnew_files,
+)
 from dotdoctor.application.disk import _format_bytes
 from dotdoctor.domain.context import ScanContext
 from dotdoctor.domain.models import CheckResult, Severity
@@ -16,6 +24,44 @@ from dotdoctor.infrastructure.audit_processes import check_cancelled
 
 class HygieneChecksMixin:
     """Read-only checks for system hygiene and reclaimable disk space."""
+
+    @staticmethod
+    def _dry_run_paccache(
+        run_cap: Callable[..., _ExecResult],
+        args: list[str],
+        total_str: str,
+    ) -> tuple[int, str] | CheckResult:
+        cmd_display = " ".join(args)
+        res = run_cap(args, timeout=20)
+        if res.completed is None or res.completed.returncode != 0:
+            return _unverified(
+                "sys.cache",
+                f"{total_str} in cache; cleanup candidates not verified",
+                cmd_display,
+                raw_excerpt=(
+                    (getattr(res.completed, "stderr", "") or res.completed.stdout)
+                    if res.completed is not None
+                    else None
+                ),
+            )
+        match = re.search(
+            r"finished dry run:\s*(\d+)\s*candidates\s*\(disk space saved:\s*([^)]+)\)",
+            res.completed.stdout,
+        )
+        if match:
+            return int(match.group(1)), match.group(2).strip()
+        if re.search(
+            r"^\s*(?:==>\s*)?no candidate packages found for pruning\s*$",
+            res.completed.stdout + "\n" + getattr(res.completed, "stderr", ""),
+            re.MULTILINE,
+        ):
+            return 0, ""
+        return _unverified(
+            "sys.cache",
+            f"{total_str} in cache; cleanup output not recognized",
+            cmd_display,
+            raw_excerpt=res.completed.stdout,
+        )
 
     def _check_pacman_cache(
         self,
@@ -49,47 +95,19 @@ class HygieneChecksMixin:
             )
 
         su = _su()
-        format_bytes_fn = getattr(su, "_format_bytes", _format_bytes)
+        format_bytes_fn: Callable[[int], str] = getattr(su, "_format_bytes", _format_bytes)
         total_str = format_bytes_fn(total_bytes)
         candidates = 0
         saved_str = ""
 
-        which_fn = getattr(su, "shutil", shutil).which
-        if which_fn("paccache") is not None:
+        which_fn: Callable[[str], Any] = getattr(su, "shutil", shutil).which
+        has_paccache = which_fn("paccache") is not None
+        if has_paccache:
             run_cap = getattr(su, "_run_capture", _run_capture)
-            res = run_cap(["paccache", "-d"], timeout=20)
-            if res.completed is None or res.completed.returncode != 0:
-                return _unverified(
-                    "sys.cache",
-                    f"{total_str} in cache; cleanup candidates not verified",
-                    "paccache -d",
-                    raw_excerpt=(
-                        (getattr(res.completed, "stderr", "") or res.completed.stdout)
-                        if res.completed is not None
-                        else None
-                    ),
-                )
-            if res.completed and res.completed.returncode == 0:
-                match = re.search(
-                    r"finished dry run:\s*(\d+)\s*candidates\s*\(disk space saved:\s*([^)]+)\)",
-                    res.completed.stdout,
-                )
-                if match:
-                    candidates = int(match.group(1))
-                    saved_str = match.group(2).strip()
-                elif re.search(
-                    r"^\s*(?:==>\s*)?no candidate packages found for pruning\s*$",
-                    res.completed.stdout + "\n" + getattr(res.completed, "stderr", ""),
-                    re.MULTILINE,
-                ):
-                    candidates = 0
-                else:
-                    return _unverified(
-                        "sys.cache",
-                        f"{total_str} in cache; cleanup output not recognized",
-                        "paccache -d",
-                        raw_excerpt=res.completed.stdout,
-                    )
+            probe = self._dry_run_paccache(run_cap, ["paccache", "-d"], total_str)
+            if isinstance(probe, CheckResult):
+                return probe
+            candidates, saved_str = probe
 
         if candidates > 0 and (total_bytes > 2 * 1024**3 or candidates >= 10):
             return CheckResult(
@@ -97,17 +115,66 @@ class HygieneChecksMixin:
                 severity=Severity.WARN,
                 message=f"{total_str} in pacman cache ({saved_str} reclaimable)",
                 remediation="sudo paccache -rk2",
-                details={"total_bytes": total_bytes, "candidates": candidates, "saved": saved_str},
+                details={
+                    "total_bytes": total_bytes,
+                    "candidates": candidates,
+                    "saved": saved_str,
+                    "keep_versions": 2,
+                },
             )
 
         if total_bytes > 5 * 1024**3:
-            return CheckResult(
-                check_id="sys.cache",
-                severity=Severity.WARN,
-                message=f"{total_str} in pacman cache",
-                remediation="sudo paccache -rk2",
-                details={"total_bytes": total_bytes},
+            if not has_paccache:
+                return CheckResult(
+                    check_id="sys.cache",
+                    severity=Severity.WARN,
+                    message=f"{total_str} in pacman cache",
+                    remediation="sudo pacman -Sc",
+                    details={"total_bytes": total_bytes},
+                )
+
+            run_cap = getattr(su, "_run_capture", _run_capture)
+            k1_probe = self._dry_run_paccache(run_cap, ["paccache", "-d", "-k1"], total_str)
+            if isinstance(k1_probe, CheckResult):
+                return k1_probe
+            k1_candidates, k1_saved = k1_probe
+            if k1_candidates > 0:
+                return CheckResult(
+                    check_id="sys.cache",
+                    severity=Severity.WARN,
+                    message=(
+                        f"{total_str} in pacman cache ({k1_saved} reclaimable by keeping 1 version)"
+                    ),
+                    remediation="sudo paccache -rk1",
+                    details={
+                        "total_bytes": total_bytes,
+                        "candidates": k1_candidates,
+                        "saved": k1_saved,
+                        "keep_versions": 1,
+                    },
+                )
+
+            uninst_probe = self._dry_run_paccache(
+                run_cap, ["paccache", "-d", "-u", "-k0"], total_str
             )
+            if isinstance(uninst_probe, CheckResult):
+                return uninst_probe
+            uninst_candidates, uninst_saved = uninst_probe
+            if uninst_candidates > 0:
+                return CheckResult(
+                    check_id="sys.cache",
+                    severity=Severity.WARN,
+                    message=(
+                        f"{total_str} in pacman cache ({uninst_saved} from uninstalled packages)"
+                    ),
+                    remediation="sudo paccache -ruk0",
+                    details={
+                        "total_bytes": total_bytes,
+                        "candidates": uninst_candidates,
+                        "saved": uninst_saved,
+                        "uninstalled_only": True,
+                    },
+                )
 
         return CheckResult(
             check_id="sys.cache",

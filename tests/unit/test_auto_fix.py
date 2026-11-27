@@ -132,6 +132,72 @@ def test_fix_sys_cache_runs_paccache(monkeypatch, tmp_path: Path) -> None:
     ]
 
 
+def test_fix_sys_cache_k1_uninstalled_and_zero_candidates(monkeypatch, tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    fixer = InteractiveAutoFixer(Console())
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        commands.append(cmd)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(
+        "dotdoctor.application.auto_fix.shutil.which", lambda name: f"/usr/bin/{name}"
+    )
+    monkeypatch.setattr("dotdoctor.application.auto_fix.subprocess.run", fake_run)
+
+    k1_result = CheckResult(
+        check_id="sys.cache",
+        severity=Severity.WARN,
+        message="5.0 GiB in pacman cache (2.4 GiB reclaimable by keeping 1 version)",
+        details={
+            "total_bytes": 5 * 1024**3 + 1,
+            "candidates": 8,
+            "saved": "2.4 GiB",
+            "keep_versions": 1,
+        },
+    )
+    assert "Keep only 1 package version (2.4 GiB reclaimable)" in fixer._build_prompt_message(
+        k1_result
+    )
+    assert fixer.can_fix(k1_result) is True
+    assert fixer._fix_sys_cache(context, k1_result).changed is True
+    assert commands == [
+        ["sudo", "-n", "-v"],
+        ["sudo", "-n", "paccache", "-rk1"],
+        ["sudo", "-n", "paccache", "-ruk0"],
+    ]
+
+    commands.clear()
+    uninst_result = CheckResult(
+        check_id="sys.cache",
+        severity=Severity.WARN,
+        message="5.0 GiB in pacman cache (1.1 GiB from uninstalled packages)",
+        details={
+            "total_bytes": 5 * 1024**3 + 1,
+            "candidates": 3,
+            "saved": "1.1 GiB",
+            "uninstalled_only": True,
+        },
+    )
+    assert "uninstalled packages (1.1 GiB reclaimable)" in fixer._build_prompt_message(
+        uninst_result
+    )
+    assert fixer._fix_sys_cache(context, uninst_result).changed is True
+    assert commands == [
+        ["sudo", "-n", "-v"],
+        ["sudo", "-n", "paccache", "-ruk0"],
+    ]
+
+    zero_result = CheckResult(
+        check_id="sys.cache",
+        severity=Severity.WARN,
+        message="5.0 GiB in pacman cache",
+        details={"total_bytes": 5 * 1024**3 + 1, "candidates": 0},
+    )
+    assert fixer.can_fix(zero_result) is False
+
+
 def test_fix_sys_flatpak_unused(monkeypatch, tmp_path: Path) -> None:
     context = _context(tmp_path)
     fixer = InteractiveAutoFixer(Console())

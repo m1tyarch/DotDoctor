@@ -631,3 +631,74 @@ def test_normal_empty_results_pass_together_in_parallel_audit(monkeypatch, conte
     report = service.run(context, include_checks=ids)
     assert {result.check_id for result in report.results} == ids
     assert all(result.severity == Severity.PASS for result in report.results)
+
+
+def test_large_cache_checks_k1_and_uninstalled_and_passes_when_nothing_reclaimable(
+    monkeypatch, context, tmp_path
+):
+    from types import SimpleNamespace
+
+    pkg_file = tmp_path / "big.pkg.tar.zst"
+    pkg_file.write_bytes(b"x")
+    orig_scandir = os.scandir
+
+    class FakeEntry:
+        def __init__(self, size: int) -> None:
+            self._size = size
+
+        def is_file(self, follow_symlinks: bool = False) -> bool:
+            return True
+
+        def stat(self):
+            return SimpleNamespace(st_size=self._size)
+
+    class FakeScandir:
+        def __enter__(self):
+            return [FakeEntry(5 * 1024**3 + 1024**2)]
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(s.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(
+        "os.scandir", lambda path: FakeScandir() if path == tmp_path else orig_scandir(path)
+    )
+
+    # Case 1: -d has 0 candidates, -d -k1 has 5 candidates -> WARN with paccache -rk1
+    def cap_k1(cmd, **kwargs):
+        if cmd == ["paccache", "-d"]:
+            return completed("==> no candidate packages found for pruning\n")
+        if cmd == ["paccache", "-d", "-k1"]:
+            return completed("==> finished dry run: 5 candidates (disk space saved: 2.1 GiB)\n")
+        raise AssertionError(f"Unexpected cmd: {cmd}")
+
+    monkeypatch.setattr(s, "_run_capture", cap_k1)
+    res_k1 = s.SystemDryRunService()._check_pacman_cache(context, tmp_path)
+    assert res_k1.severity == Severity.WARN
+    assert res_k1.remediation == "sudo paccache -rk1"
+    assert res_k1.details["keep_versions"] == 1
+    assert res_k1.details["candidates"] == 5
+
+    # Case 2: -d and -d -k1 have 0, -d -u -k0 has 2 -> WARN with paccache -ruk0
+    def cap_uninst(cmd, **kwargs):
+        if cmd in (["paccache", "-d"], ["paccache", "-d", "-k1"]):
+            return completed("==> no candidate packages found for pruning\n")
+        if cmd == ["paccache", "-d", "-u", "-k0"]:
+            return completed("==> finished dry run: 2 candidates (disk space saved: 900 MiB)\n")
+        raise AssertionError(f"Unexpected cmd: {cmd}")
+
+    monkeypatch.setattr(s, "_run_capture", cap_uninst)
+    res_uninst = s.SystemDryRunService()._check_pacman_cache(context, tmp_path)
+    assert res_uninst.severity == Severity.WARN
+    assert res_uninst.remediation == "sudo paccache -ruk0"
+    assert res_uninst.details["uninstalled_only"] is True
+
+    # Case 3: all three have 0 candidates -> PASS (prevents infinite --fix loop)
+    monkeypatch.setattr(
+        s,
+        "_run_capture",
+        lambda cmd, **kwargs: completed("==> no candidate packages found for pruning\n"),
+    )
+    res_clean = s.SystemDryRunService()._check_pacman_cache(context, tmp_path)
+    assert res_clean.severity == Severity.PASS
+    assert res_clean.details["candidates"] == 0

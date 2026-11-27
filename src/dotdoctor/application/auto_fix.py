@@ -287,6 +287,14 @@ class InteractiveAutoFixer:
 
     def _build_prompt_message(self, result: CheckResult) -> str:
         spec = _FIX_SPECS.get(result.check_id)
+        if result.check_id == "sys.cache":
+            saved = result.details.get("saved")
+            if result.details.get("keep_versions") == 1:
+                suffix = f" ({saved} reclaimable)" if saved else ""
+                return f"Pacman cache exceeds 5 GiB. Keep only 1 package version{suffix}?"
+            if result.details.get("uninstalled_only"):
+                suffix = f" ({saved} reclaimable)" if saved else ""
+                return f"Pacman cache has uninstalled packages{suffix}. Clean them now?"
         if spec is not None and spec.static_prompt is not None:
             return spec.static_prompt
 
@@ -406,12 +414,17 @@ class InteractiveAutoFixer:
 
     def _fix_sys_cache(self, context: ScanContext, result: CheckResult) -> FixOutcome:
         if shutil.which("paccache") is not None:
-            outcome = self._run_maintenance_commands(
-                [
-                    (["sudo", "paccache", "-rk2"], "Cleaning pacman package cache"),
+            if result.details.get("uninstalled_only"):
+                commands = [
                     (["sudo", "paccache", "-ruk0"], "Cleaning cache of uninstalled packages"),
                 ]
-            )
+            else:
+                keep_flag = "-rk1" if result.details.get("keep_versions") == 1 else "-rk2"
+                commands = [
+                    (["sudo", "paccache", keep_flag], "Cleaning pacman package cache"),
+                    (["sudo", "paccache", "-ruk0"], "Cleaning cache of uninstalled packages"),
+                ]
+            outcome = self._run_maintenance_commands(commands)
             if outcome.changed:
                 return FixOutcome(changed=True, note="Cleaned pacman package cache.")
             return outcome
@@ -552,6 +565,8 @@ class InteractiveAutoFixer:
             return False
         spec = _FIX_SPECS.get(result.check_id)
         if spec is None:
+            return False
+        if result.check_id == "sys.cache" and result.details.get("candidates") == 0:
             return False
         if spec.maintenance_managed:
             return self._has_maintenance_action(result)
